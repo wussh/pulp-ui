@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
-from app.routes import content, overview, tasks, tenants, validation
+from app.routes import content, destroy, overview, tasks, tenants, validation
 from app.state import ActivityStore, CorrelationStore, RunStore
 
 STATIC_DIR = "app/static"
@@ -46,4 +46,5 @@ def create_app(settings: Settings, client_factory=None) -> FastAPI:
     app.include_router(content.router, prefix="/ui")
     app.include_router(tasks.router, prefix="/ui")
     app.include_router(validation.router, prefix="/ui")
+    app.include_router(destroy.router, prefix="/ui")
     return app

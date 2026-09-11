@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Delete resource</h2>
+<form id="delete-form">
+  <label>Domain <input name="domain" value="default" required></label>
+  <label>Resource href <input name="href" size="80" required></label>
+  <button type="button" id="preview-button">Preview</button>
+  <dl id="delete-preview" class="facts" hidden></dl>
+  <label><input type="checkbox" id="confirm-check"> I have reviewed this exact resource and want to delete it</label>
+  <button type="submit">Delete</button>
+</form>
+<div id="delete-output"></div>
+<script>
+document.getElementById("preview-button").addEventListener("click", function () {
+  var form = document.getElementById("delete-form");
+  var params = new URLSearchParams(Object.fromEntries(new FormData(form).entries()));
+  fetch("/ui/delete/preview?" + params.toString(), { credentials: "same-origin" })
+    .then(function (r) { return r.json(); })
+    .then(function (body) {
+      var list = document.getElementById("delete-preview");
+      list.hidden = false;
+      list.textContent = "";
+      [["Type", body.type], ["Name", body.name], ["Domain", body.domain], ["Href", body.href]]
+        .forEach(function (pair) {
+          var dt = document.createElement("dt");
+          dt.textContent = pair[0];
+          var dd = document.createElement("dd");
+          dd.textContent = pair[1] || "";
+          list.appendChild(dt);
+          list.appendChild(dd);
+        });
+    });
+});
+document.getElementById("delete-form").addEventListener("submit", function (event) {
+  event.preventDefault();
+  var data = new FormData(event.target);
+  window.pulpOps.postJSON("/ui/api/delete", {
+    domain: data.get("domain"),
+    href: data.get("href"),
+    confirmed: document.getElementById("confirm-check").checked
+  }).then(function (body) {
+    document.getElementById("delete-output").textContent = JSON.stringify(body, null, 2);
+  });
+});
+</script>
+{% endblock %}

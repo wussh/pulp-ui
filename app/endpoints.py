@@ -112,6 +112,35 @@ def validate_plugin(value: str) -> str:
     return value
 
 
+# Python package names (PEP 508 normalised form): letters, digits, dot, hyphen,
+# underscore; must start and end alphanumeric.
+_PYTHON_PACKAGE_PATTERN = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
+
+# Ansible Galaxy collection names: <namespace>.<collection>, each segment
+# lowercase letters, digits, or underscore (Galaxy rejects anything else).
+_ANSIBLE_COLLECTION_PATTERN = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)+$")
+
+
+def validate_python_package(value: str) -> str:
+    value = value.strip() if isinstance(value, str) else ""
+    if not value or len(value) > 100 or not _PYTHON_PACKAGE_PATTERN.match(value):
+        raise ValueError(
+            "python package names must be 1-100 characters of letters, digits, "
+            "dot, hyphen, or underscore, and must start and end with a letter or digit"
+        )
+    return value
+
+
+def validate_ansible_collection(value: str) -> str:
+    value = value.strip() if isinstance(value, str) else ""
+    if not value or len(value) > 200 or not _ANSIBLE_COLLECTION_PATTERN.match(value):
+        raise ValueError(
+            "ansible collection names must be <namespace>.<name> using lowercase "
+            "letters, digits, or underscore"
+        )
+    return value
+
+
 def plugin_api(domain: str, path: str) -> str:
     domain = validate_name("domain", domain)
     return f"/pulp/{domain}/api/v3/{path.lstrip('/')}"

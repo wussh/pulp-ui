@@ -772,3 +772,217 @@ def test_pull_through_status_records_no_new_routes_under_container_container(set
     from app.endpoints import resource_segment
 
     assert resource_segment("container", "repository") == "container/container"
+
+
+# --- Feature 3: python and ansible include-list editors -----------------------
+
+PYTHON_REMOTE = "/pulp/default/api/v3/remotes/python/python/r1/"
+PYTHON_REPO = "/pulp/default/api/v3/repositories/python/python/abc/"
+ANSIBLE_REMOTE = "/pulp/default/api/v3/remotes/ansible/collection/r1/"
+ANSIBLE_REPO = "/pulp/default/api/v3/repositories/ansible/ansible/abc/"
+
+
+def test_python_includes_no_change_skips_sync(settings):
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "pulp_href": PYTHON_REMOTE,
+                    "includes": [{"name": "requests"}],
+                },
+            )
+        return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/t/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/python/includes",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "remote_href": PYTHON_REMOTE,
+                "repository_href": PYTHON_REPO,
+                "names": ["requests"],
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changed"] is False
+    assert body["task_href"] == ""
+    assert calls == [("GET", PYTHON_REMOTE)]
+
+
+def test_python_includes_merge_patches_and_syncs(settings):
+    import json
+
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, json.loads(request.content or b"{}")))
+        if request.method == "GET":
+            return httpx.Response(
+                200, json={"pulp_href": PYTHON_REMOTE, "includes": [{"name": "requests"}]}
+            )
+        if request.method == "PATCH":
+            return httpx.Response(200, json={"pulp_href": PYTHON_REMOTE})
+        return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/sync-1/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/python/includes",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "remote_href": PYTHON_REMOTE,
+                "repository_href": PYTHON_REPO,
+                "names": ["boto3"],
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changed"] is True
+    assert body["includes"] == ["boto3", "requests"]
+    assert body["task_href"] == "/pulp/default/api/v3/tasks/sync-1/"
+    patch = [call for call in seen if call[0] == "PATCH"][0]
+    assert patch[1] == PYTHON_REMOTE
+    assert patch[2] == {"includes": [{"name": "boto3"}, {"name": "requests"}]}
+    assert seen[-1][1] == PYTHON_REPO + "sync/"
+
+
+def test_python_includes_rejects_bad_package_name(settings):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json={})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/python/includes",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "remote_href": PYTHON_REMOTE,
+                "repository_href": PYTHON_REPO,
+                "names": ["../../etc/passwd"],
+            },
+        )
+    assert response.status_code == 400
+    assert calls == []
+
+
+def test_ansible_collections_merge_never_sends_empty_requirements(settings):
+    import json
+
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, json.loads(request.content or b"{}")))
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "pulp_href": ANSIBLE_REMOTE,
+                    "requirements_file": "collections:\n  - name: community.general\n",
+                },
+            )
+        if request.method == "PATCH":
+            return httpx.Response(200, json={"pulp_href": ANSIBLE_REMOTE})
+        return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/sync-2/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/ansible/collections",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "remote_href": ANSIBLE_REMOTE,
+                "repository_href": ANSIBLE_REPO,
+                "names": ["ansible.posix"],
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changed"] is True
+    assert body["collections"] == ["ansible.posix", "community.general"]
+    patch = [call for call in seen if call[0] == "PATCH"][0]
+    sent = patch[2]["requirements_file"]
+    assert sent.strip() != ""
+    assert "- name: ansible.posix" in sent
+    assert "- name: community.general" in sent
+    assert seen[-1][1] == ANSIBLE_REPO + "sync/"
+
+
+def test_ansible_collections_no_change_skips_sync(settings):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(
+            200,
+            json={
+                "pulp_href": ANSIBLE_REMOTE,
+                "requirements_file": "collections:\n  - name: community.general\n",
+            },
+        )
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/ansible/collections",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "remote_href": ANSIBLE_REMOTE,
+                "repository_href": ANSIBLE_REPO,
+                "names": ["community.general"],
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changed"] is False
+    assert body["task_href"] == ""
+    assert calls == [ANSIBLE_REMOTE]
+
+
+def test_ansible_collections_rejects_malformed_name(settings):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json={})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/ansible/collections",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "remote_href": ANSIBLE_REMOTE,
+                "repository_href": ANSIBLE_REPO,
+                "names": ["NoDotName"],
+            },
+        )
+    assert response.status_code == 400
+    assert calls == []
+
+
+def test_ansible_requirements_guard_rejects_empty_file(settings):
+    # The endpoint cannot reach this state (names are validated non-empty), but the
+    # guard is the documented protection against an OOM-inducing full-galaxy sync.
+    import pytest as _pytest
+
+    from app.routes.content import _guard_ansible_requirements
+
+    for bad in ["", "collections:\n", "  - name: x"]:
+        with _pytest.raises(ValueError):
+            _guard_ansible_requirements(bad)
+    assert _guard_ansible_requirements("collections:\n  - name: a.b\n")

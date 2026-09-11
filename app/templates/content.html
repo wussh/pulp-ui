@@ -123,6 +123,26 @@
 </form>
 <div id="link-output"></div>
 
+<h3>Python package includes</h3>
+<form id="python-includes-form">
+  <label>Domain <input name="domain" value="{{ domain }}" required></label>
+  <label>Remote href <input name="remote_href" required></label>
+  <label>Repository href <input name="repository_href" required></label>
+  <label>Package names (comma separated) <input name="names_csv" required></label>
+  <button type="submit">Merge and sync</button>
+</form>
+<div id="python-includes-output"></div>
+
+<h3>Ansible collections</h3>
+<form id="ansible-collections-form">
+  <label>Domain <input name="domain" value="{{ domain }}" required></label>
+  <label>Remote href <input name="remote_href" required></label>
+  <label>Repository href <input name="repository_href" required></label>
+  <label>Collections (comma separated namespace.name) <input name="names_csv" required></label>
+  <button type="submit">Merge and sync</button>
+</form>
+<div id="ansible-collections-output"></div>
+
 <script>
 function bindContentForm(formId, outputId, url, onBody) {
   document.getElementById(formId).addEventListener("submit", function (event) {
@@ -154,6 +174,30 @@ bindContentForm("publish-form", "publish-output", "/ui/api/content/publish", fol
 bindContentForm("link-form", "link-output", "/ui/api/content/link", followTask);
 bindContentForm(
   "pull-through-form", "pull-through-output", "/ui/api/content/pull-through", followTask
+);
+
+function bindListForm(formId, outputId, url) {
+  document.getElementById(formId).addEventListener("submit", function (event) {
+    event.preventDefault();
+    var payload = Object.fromEntries(new FormData(event.target).entries());
+    payload.names = (payload.names_csv || "")
+      .split(",")
+      .map(function (n) { return n.trim(); })
+      .filter(function (n) { return n; });
+    delete payload.names_csv;
+    window.pulpOps.postJSON(url, payload).then(function (body) {
+      document.getElementById(outputId).textContent = JSON.stringify(body, null, 2);
+      followTask(payload, body);
+    });
+  });
+}
+
+bindListForm(
+  "python-includes-form", "python-includes-output", "/ui/api/content/python/includes"
+);
+bindListForm(
+  "ansible-collections-form", "ansible-collections-output",
+  "/ui/api/content/ansible/collections"
 );
 </script>
 {% endblock %}

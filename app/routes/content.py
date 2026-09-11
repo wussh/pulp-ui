@@ -10,8 +10,10 @@ from app.endpoints import (
     publication_path,
     pull_through_path,
     requires_base_path,
+    validate_ansible_collection,
     validate_name,
     validate_plugin,
+    validate_python_package,
 )
 from app.pulp import PulpError
 from app.safety import validate_source_url
@@ -82,6 +84,134 @@ def _require_repository_href(domain: str, plugin: str, href: str) -> str:
 
 def _require_distribution_href(domain: str, plugin: str, href) -> str:
     return _require_resource_href(domain, plugin, "distribution", href, "distribution")
+
+
+def _require_remote_href(domain: str, plugin: str, href) -> str:
+    return _require_resource_href(domain, plugin, "remote", href, "remote")
+
+
+async def _sync_repository(client, domain, plugin, repository_href, correlation_id):
+    return await client.request(
+        "POST",
+        plugin_api(domain, plugin_resource_path(plugin, "repository"))
+        + f"{_record_id(repository_href)}/sync/",
+        json_body={},
+        correlation_id=correlation_id,
+    )
+
+
+def _new_names(raw, validator) -> set[str]:
+    if not isinstance(raw, list):
+        raise ValueError("names must be a list")
+    names: set[str] = set()
+    for item in raw:
+        names.add(validator(item))
+    return names
+
+
+async def update_python_includes(client, payload: dict, correlation_id: str) -> dict:
+    domain = validate_name("domain", payload.get("domain", ""))
+    remote_href = _require_remote_href(domain, "python", payload.get("remote_href", ""))
+    repository_href = _require_repository_href(
+        domain, "python", payload.get("repository_href", "")
+    )
+    names = _new_names(payload.get("names"), validate_python_package)
+    if not names:
+        raise ValueError("at least one package name is required")
+    remote = await client.request("GET", remote_href, correlation_id=correlation_id)
+    current = {
+        str(item.get("name"))
+        for item in remote.get("includes") or []
+        if isinstance(item, dict) and item.get("name")
+    }
+    merged = sorted(current | names)
+    if merged == sorted(current):
+        # Nothing to add: do not issue an empty sync (it would re-walk the upstream).
+        return {"changed": False, "includes": merged, "task_href": ""}
+    await client.request(
+        "PATCH",
+        remote_href,
+        json_body={"includes": [{"name": name} for name in merged]},
+        correlation_id=correlation_id,
+    )
+    result = await _sync_repository(
+        client, domain, "python", repository_href, correlation_id
+    )
+    return {
+        "changed": True,
+        "includes": merged,
+        "task_href": result.get("task", ""),
+    }
+
+
+def _parse_ansible_requirements(raw) -> list[str]:
+    collections: list[str] = []
+    in_collections = False
+    for line in str(raw or "").splitlines():
+        line = line.strip()
+        if line == "collections:":
+            in_collections = True
+            continue
+        if in_collections and line.startswith("- name:"):
+            collections.append(line.split("- name:", 1)[1].strip())
+    return collections
+
+
+def _build_ansible_requirements(names) -> str:
+    lines = ["collections:"]
+    for name in sorted(names):
+        lines.append(f"  - name: {name}")
+    return "\n".join(lines) + "\n"
+
+
+def _guard_ansible_requirements(requirements_file: str) -> str:
+    # A sync with no requirements downloads all of galaxy.ansible.com and OOMs the
+    # worker. The merge always contains at least the submitted names, but this stays
+    # a standalone guard so no future refactor can send an empty file.
+    if not _parse_ansible_requirements(requirements_file):
+        raise ValueError("refusing to sync ansible with an empty requirements_file")
+    return requirements_file
+
+
+async def update_ansible_collections(client, payload: dict, correlation_id: str) -> dict:
+    domain = validate_name("domain", payload.get("domain", ""))
+    remote_href = _require_remote_href(
+        domain, "ansible", payload.get("remote_href", "")
+    )
+    repository_href = _require_repository_href(
+        domain, "ansible", payload.get("repository_href", "")
+    )
+    names = _new_names(payload.get("names"), validate_ansible_collection)
+    if not names:
+        raise ValueError("at least one collection name is required")
+    remote = await client.request("GET", remote_href, correlation_id=correlation_id)
+    current = set(_parse_ansible_requirements(remote.get("requirements_file")))
+    merged = sorted(current | names)
+    if merged == sorted(current):
+        return {
+            "changed": False,
+            "collections": merged,
+            "requirements_file": str(remote.get("requirements_file") or ""),
+            "task_href": "",
+        }
+    requirements_file = _guard_ansible_requirements(
+        _build_ansible_requirements(merged)
+    )
+    await client.request(
+        "PATCH",
+        remote_href,
+        json_body={"requirements_file": requirements_file},
+        correlation_id=correlation_id,
+    )
+    result = await _sync_repository(
+        client, domain, "ansible", repository_href, correlation_id
+    )
+    return {
+        "changed": True,
+        "collections": merged,
+        "requirements_file": requirements_file,
+        "task_href": result.get("task", ""),
+    }
 
 
 def _require_publication_href(domain: str, plugin: str, href) -> str:
@@ -510,6 +640,46 @@ async def pull_through_status(request: Request) -> JSONResponse:
         )
     await client.aclose()
     return JSONResponse(body)
+
+
+@router.post("/api/content/python/includes")
+async def python_includes(request: Request, payload: dict = Body(...)) -> JSONResponse:
+    async def handler(client, correlation_id):
+        result = await update_python_includes(client, payload, correlation_id)
+        request.app.state.activity.record(
+            {
+                "correlation_id": correlation_id,
+                "operator": getattr(request.state, "username", None) or "operator",
+                "action": "content.python.includes",
+                "target": payload.get("remote_href", ""),
+                "target_type": "remote",
+                "result": "completed",
+            }
+        )
+        return result
+
+    return await _guarded(request, handler)
+
+
+@router.post("/api/content/ansible/collections")
+async def ansible_collections(
+    request: Request, payload: dict = Body(...)
+) -> JSONResponse:
+    async def handler(client, correlation_id):
+        result = await update_ansible_collections(client, payload, correlation_id)
+        request.app.state.activity.record(
+            {
+                "correlation_id": correlation_id,
+                "operator": getattr(request.state, "username", None) or "operator",
+                "action": "content.ansible.collections",
+                "target": payload.get("remote_href", ""),
+                "target_type": "remote",
+                "result": "completed",
+            }
+        )
+        return result
+
+    return await _guarded(request, handler)
 
 
 @router.post("/api/content/pull-through")

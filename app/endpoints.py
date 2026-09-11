@@ -32,6 +32,21 @@ RESOURCE_SEGMENTS: dict[tuple[str, str], str] = {
     ("container", "distribution"): "container/container",
 }
 
+# Publication endpoints verified live against tbs-dev Pulp. Only these three
+# plugins expose one: ansible and container have no publication endpoint (the
+# ansible distribution serves straight from the repository; container is
+# pull-through with nothing to publish). Segment shape mirrors the resource
+# table: deb uses `apt`, python uses `pypi`.
+PUBLICATION_SEGMENTS: dict[str, str] = {
+    "rpm": "rpm/rpm",
+    "deb": "deb/apt",
+    "python": "python/pypi",
+}
+
+# Container pull-through lives at its own segment, distinct from the regular
+# container/container resources; the latter must not be repurposed.
+PULL_THROUGH_SEGMENT = "container/pull-through"
+
 # Only container distributions take the `base_path` field.
 _BASE_PATH_PLUGINS = frozenset({"container"})
 
@@ -57,6 +72,28 @@ def plugin_resource_path(plugin: str, kind: str) -> str:
 
 def requires_base_path(plugin: str) -> bool:
     return plugin in _BASE_PATH_PLUGINS
+
+
+def publication_path(plugin: str) -> str:
+    """Relative collection path for a plugin's publication endpoint.
+
+    Raises ValueError for plugins with no publication endpoint (ansible,
+    container, or anything unknown).
+    """
+    try:
+        segment = PUBLICATION_SEGMENTS[plugin]
+    except KeyError:
+        raise ValueError("plugin has no publication endpoint") from None
+    return f"publications/{segment}/"
+
+
+def pull_through_path(kind: str) -> str:
+    """Relative collection path for a container pull-through resource kind."""
+    try:
+        collection = _KIND_COLLECTION[kind]
+    except KeyError:
+        raise ValueError("unsupported pull-through resource kind") from None
+    return f"{collection}/{PULL_THROUGH_SEGMENT}/"
 
 
 def validate_name(kind: str, value: str) -> str:

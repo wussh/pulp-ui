@@ -4,8 +4,10 @@ from fastapi.templating import Jinja2Templates
 
 from app.endpoints import (
     CONTENT_PLUGINS,
+    PUBLICATION_SEGMENTS,
     plugin_api,
     plugin_resource_path,
+    publication_path,
     requires_base_path,
     validate_name,
     validate_plugin,
@@ -59,14 +61,79 @@ async def list_content(client, domain: str) -> dict:
     return {"domain": domain, "plugins": out}
 
 
-def _require_repository_href(domain: str, plugin: str, href: str) -> str:
+def _require_resource_href(
+    domain: str, plugin: str, kind: str, href, label: str
+) -> str:
     href = str(href or "")
-    expected_prefix = plugin_api(domain, plugin_resource_path(plugin, "repository"))
+    expected_prefix = plugin_api(domain, plugin_resource_path(plugin, kind))
     if not href.startswith(expected_prefix):
-        raise ValueError("repository href is not valid for this domain and plugin")
+        raise ValueError(f"{label} href is not valid for this domain and plugin")
     if href.rstrip("/") == expected_prefix.rstrip("/"):
-        raise ValueError("repository href must identify a specific repository")
+        raise ValueError(f"{label} href must identify a specific {label}")
     return href
+
+
+def _require_repository_href(domain: str, plugin: str, href: str) -> str:
+    return _require_resource_href(domain, plugin, "repository", href, "repository")
+
+
+def _require_distribution_href(domain: str, plugin: str, href) -> str:
+    return _require_resource_href(domain, plugin, "distribution", href, "distribution")
+
+
+def _require_publication_href(domain: str, plugin: str, href) -> str:
+    href = str(href or "")
+    # publication_path raises for plugins without a publication endpoint.
+    expected_prefix = plugin_api(domain, publication_path(plugin))
+    if not href.startswith(expected_prefix):
+        raise ValueError("publication href is not valid for this domain and plugin")
+    if href.rstrip("/") == expected_prefix.rstrip("/"):
+        raise ValueError("publication href must identify a specific publication")
+    return href
+
+
+async def publish_repository(client, payload: dict, correlation_id: str) -> dict:
+    domain = validate_name("domain", payload.get("domain", ""))
+    plugin = validate_plugin(payload.get("plugin", ""))
+    # Reject plugins with no publication endpoint before any upstream call.
+    path = plugin_api(domain, publication_path(plugin))
+    repository_href = _require_repository_href(
+        domain, plugin, payload.get("repository_href", "")
+    )
+    repository = await client.request(
+        "GET", repository_href, correlation_id=correlation_id
+    )
+    latest_version_href = str(repository.get("latest_version_href") or "")
+    if not latest_version_href:
+        raise ValueError("repository has no version to publish")
+    # Fire the publish and return the task; the operator follows it on /ui/tasks.
+    result = await client.request(
+        "POST",
+        path,
+        json_body={"repository_version": latest_version_href},
+        correlation_id=correlation_id,
+    )
+    return {"task_href": result.get("task", "")}
+
+
+async def link_publication(client, payload: dict, correlation_id: str) -> dict:
+    domain = validate_name("domain", payload.get("domain", ""))
+    plugin = validate_plugin(payload.get("plugin", ""))
+    distribution_href = _require_distribution_href(
+        domain, plugin, payload.get("distribution_href", "")
+    )
+    publication_href = _require_publication_href(
+        domain, plugin, payload.get("publication_href", "")
+    )
+    # rpm/deb bind through `publication` with `repository` null; the UI previously
+    # bound `repository`, so synced content was never served on those plugins.
+    result = await client.request(
+        "PATCH",
+        distribution_href,
+        json_body={"repository": None, "publication": publication_href},
+        correlation_id=correlation_id,
+    )
+    return {"task_href": result.get("task", "")}
 
 
 async def create_repository(client, payload: dict, correlation_id: str) -> dict:
@@ -173,6 +240,7 @@ async def _guarded(request: Request, handler) -> JSONResponse:
 async def content_page(request: Request) -> HTMLResponse:
     domain = request.query_params.get("domain", "default")
     choices = list(CONTENT_PLUGINS)
+    publish_choices = list(PUBLICATION_SEGMENTS)
     client = request.app.state.client_factory()
     try:
         data = await list_content(client, domain)
@@ -185,6 +253,7 @@ async def content_page(request: Request) -> HTMLResponse:
                 "error": str(exc),
                 "plugins": {},
                 "plugin_choices": choices,
+                "publish_plugin_choices": publish_choices,
                 "domain": domain,
                 "warnings": [],
                 "current_user": "operator",
@@ -200,6 +269,7 @@ async def content_page(request: Request) -> HTMLResponse:
                 "error": exc.safe_message,
                 "plugins": {},
                 "plugin_choices": choices,
+                "publish_plugin_choices": publish_choices,
                 "domain": domain,
                 "warnings": [],
                 "current_user": "operator",
@@ -210,7 +280,13 @@ async def content_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "content.html",
-        {**data, "plugin_choices": choices, "warnings": [], "current_user": "operator"},
+        {
+            **data,
+            "plugin_choices": choices,
+            "publish_plugin_choices": publish_choices,
+            "warnings": [],
+            "current_user": "operator",
+        },
     )
 
 
@@ -274,6 +350,44 @@ async def distribution_create(
             "pulp_href": created.get("pulp_href", ""),
             "task_href": created.get("task", ""),
         }
+
+    return await _guarded(request, handler)
+
+
+@router.post("/api/content/publish")
+async def publish(request: Request, payload: dict = Body(...)) -> JSONResponse:
+    async def handler(client, correlation_id):
+        result = await publish_repository(client, payload, correlation_id)
+        request.app.state.activity.record(
+            {
+                "correlation_id": correlation_id,
+                "operator": getattr(request.state, "username", None) or "operator",
+                "action": "content.publish",
+                "target": payload.get("repository_href", ""),
+                "target_type": "repository",
+                "result": "completed",
+            }
+        )
+        return result
+
+    return await _guarded(request, handler)
+
+
+@router.post("/api/content/link")
+async def link(request: Request, payload: dict = Body(...)) -> JSONResponse:
+    async def handler(client, correlation_id):
+        result = await link_publication(client, payload, correlation_id)
+        request.app.state.activity.record(
+            {
+                "correlation_id": correlation_id,
+                "operator": getattr(request.state, "username", None) or "operator",
+                "action": "content.link",
+                "target": payload.get("distribution_href", ""),
+                "target_type": "distribution",
+                "result": "completed",
+            }
+        )
+        return result
 
     return await _guarded(request, handler)
 

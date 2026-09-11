@@ -422,3 +422,141 @@ def test_sync_failure_still_reports_created_remote(settings):
     assert seen["remote_name"].startswith("sync-")
     assert seen["remote_name"] != "sync-remote"
     assert body["correlation_id"] in seen["remote_name"]
+
+
+# --- Feature 1: publish and link ---------------------------------------------
+
+PUBLICATION_PATHS = {
+    "rpm": "/pulp/default/api/v3/publications/rpm/rpm/",
+    "deb": "/pulp/default/api/v3/publications/deb/apt/",
+    "python": "/pulp/default/api/v3/publications/python/pypi/",
+}
+
+
+@pytest.mark.parametrize("plugin,path", list(PUBLICATION_PATHS.items()))
+def test_publish_posts_to_plugin_publication_endpoint(settings, plugin, path):
+    seen = {}
+
+    def handler(request):
+        if request.method == "GET":
+            seen["get"] = request.url.path
+            return httpx.Response(
+                200, json={"latest_version_href": "/pulp/default/api/v3/versions/1/"}
+            )
+        seen["post"] = request.url.path
+        return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/pub-1/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/publish",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "plugin": plugin,
+                "repository_href": REPO_PATHS[plugin] + "abc/",
+            },
+        )
+    assert response.status_code == 200
+    assert seen["get"] == REPO_PATHS[plugin] + "abc/"
+    assert seen["post"] == path
+    assert response.json()["task_href"] == "/pulp/default/api/v3/tasks/pub-1/"
+
+
+@pytest.mark.parametrize("plugin", ["ansible", "container"])
+def test_publish_rejects_plugins_without_publication_endpoint(settings, plugin):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"latest_version_href": "x"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/publish",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "plugin": plugin,
+                "repository_href": REPO_PATHS[plugin] + "abc/",
+            },
+        )
+    assert response.status_code == 400
+    assert "publication" in response.json()["error"]
+    assert calls == []
+
+
+def test_publish_records_activity(settings):
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"latest_version_href": "/v/1/"})
+        return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/pub-1/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/publish",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "plugin": "rpm",
+                "repository_href": REPO_PATHS["rpm"] + "abc/",
+            },
+        )
+    assert response.status_code == 200
+    entries = app.state.activity.recent()
+    assert [entry["action"] for entry in entries] == ["content.publish"]
+    assert entries[0]["target"] == REPO_PATHS["rpm"] + "abc/"
+
+
+def test_link_patches_distribution_with_publication(settings):
+    import json
+
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/link-1/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    pub = PUBLICATION_PATHS["rpm"] + "p1/"
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/link",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "plugin": "rpm",
+                "distribution_href": DISTRIBUTION_PATHS["rpm"] + "d1/",
+                "publication_href": pub,
+            },
+        )
+    assert response.status_code == 200
+    assert seen["path"] == DISTRIBUTION_PATHS["rpm"] + "d1/"
+    assert seen["body"] == {"repository": None, "publication": pub}
+    assert response.json()["task_href"] == "/pulp/default/api/v3/tasks/link-1/"
+
+
+def test_link_rejects_publication_from_other_domain(settings):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(202, json={"task": "t"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/link",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "plugin": "rpm",
+                "distribution_href": DISTRIBUTION_PATHS["rpm"] + "d1/",
+                "publication_href": "/pulp/other/api/v3/publications/rpm/rpm/p1/",
+            },
+        )
+    assert response.status_code == 400
+    assert calls == []

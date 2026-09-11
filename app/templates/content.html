@@ -63,6 +63,37 @@
 </form>
 <div id="sync-output"></div>
 
+<h3>Publish repository</h3>
+<form id="publish-form">
+  <label>Domain <input name="domain" value="{{ domain }}" required></label>
+  <label>Plugin
+    <select name="plugin">
+      {% for plugin in publish_plugin_choices %}
+      <option value="{{ plugin }}">{{ plugin }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Repository href <input name="repository_href" required></label>
+  <button type="submit">Publish</button>
+</form>
+<div id="publish-output"></div>
+
+<h3>Link distribution to publication</h3>
+<form id="link-form">
+  <label>Domain <input name="domain" value="{{ domain }}" required></label>
+  <label>Plugin
+    <select name="plugin">
+      {% for plugin in publish_plugin_choices %}
+      <option value="{{ plugin }}">{{ plugin }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Distribution href <input name="distribution_href" required></label>
+  <label>Publication href <input name="publication_href" required></label>
+  <button type="submit">Link</button>
+</form>
+<div id="link-output"></div>
+
 <script>
 function bindContentForm(formId, outputId, url, onBody) {
   document.getElementById(formId).addEventListener("submit", function (event) {
@@ -90,5 +121,7 @@ bindContentForm(
   "distribution-form", "distribution-output", "/ui/api/content/distribution", followTask
 );
 bindContentForm("sync-form", "sync-output", "/ui/api/content/sync", followTask);
+bindContentForm("publish-form", "publish-output", "/ui/api/content/publish", followTask);
+bindContentForm("link-form", "link-output", "/ui/api/content/link", followTask);
 </script>
 {% endblock %}

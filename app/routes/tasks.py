@@ -63,8 +63,8 @@ def _safe_error(error) -> dict | None:
         return None
     if isinstance(error, dict):
         return {
-            "code": error.get("code", ""),
-            "description": (error.get("description") or "")[:400],
+            "code": str(error.get("code") or ""),
+            "description": str(error.get("description") or "")[:400],
         }
     return {"code": "", "description": str(error)[:400]}
 
@@ -116,6 +116,7 @@ async def task_detail_page(request: Request) -> HTMLResponse:
             {
                 "error": message,
                 "task": {"pulp_href": href, "state": "", "progress_reports": [], "created_resources": [], "error": None},
+                "domain": domain,
                 "warnings": [],
                 "current_user": "operator",
             },
@@ -123,7 +124,9 @@ async def task_detail_page(request: Request) -> HTMLResponse:
         )
     await client.aclose()
     return templates.TemplateResponse(
-        request, "task_detail.html", {"task": data, "warnings": [], "current_user": "operator"}
+        request,
+        "task_detail.html",
+        {"task": data, "domain": domain, "warnings": [], "current_user": "operator"},
     )
 
 

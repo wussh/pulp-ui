@@ -16,7 +16,7 @@
 <h3>Created resources</h3>
 <ul>{% for resource in task.created_resources %}<li>{{ resource }}</li>{% endfor %}</ul>
 <script>
-window.pulpOps.pollTask("{{ task.pulp_href }}", function (body) {
+window.pulpOps.pollTask("{{ domain }}", "{{ task.pulp_href }}", function (body) {
   if (body.state) {
     document.getElementById("task-state").textContent = body.state;
   }

@@ -227,3 +227,128 @@ def test_plan_rejects_invalid_domain(settings):
             json={"domain": "../admin", "username": "budi-test", "group": "g"},
         )
     assert response.status_code == 400
+
+
+# --- Feature 4: complete tenant content role assignments ----------------------
+
+EXPECTED_ROLES = [
+    "core.domain_owner",
+    "core.domain_creator",
+    "rpm.rpmrepository_creator",
+    "rpm.rpmrepository_owner",
+    "deb.aptrepository_creator",
+    "deb.aptrepository_owner",
+    "python.pythonrepository_creator",
+    "python.pythonrepository_owner",
+    "ansible.ansiblerepository_creator",
+    "ansible.ansiblerepository_owner",
+    "container.containerrepository_creator",
+    "container.containerrepository_owner",
+]
+
+
+def test_apply_assigns_owner_creator_and_content_roles(settings):
+    import json
+
+    role_posts = []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"count": 0, "results": []})
+        if request.url.path.endswith("/roles/"):
+            role_posts.append(json.loads(request.content))
+            return httpx.Response(202, json={"task": "/pulp/api/v3/tasks/role-1/"})
+        return httpx.Response(
+            201,
+            json={"name": "x", "username": "x", "pulp_href": request.url.path + "1/"},
+        )
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/tenants/apply",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "dummy-alpha",
+                "username": "budi-test",
+                "group": "dummy-alpha-users",
+            },
+        )
+    assert response.status_code == 200
+    assert [post["role"] for post in role_posts] == EXPECTED_ROLES
+    for post in role_posts:
+        assert post["content_object"] is None
+        assert post["domain"] == "/pulp/default/api/v3/domains/1/"
+
+
+def test_plan_preview_reports_role_assignment_count(settings):
+    def handler(request):
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        body = test_client.post(
+            "/ui/api/tenants/plan",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "dummy-alpha",
+                "username": "budi-test",
+                "group": "dummy-alpha-users",
+            },
+        ).json()
+    assert body["preview"]["assignments"] == len(EXPECTED_ROLES)
+    role_step = body["steps"][-1]
+    assert role_step["resource"] == "role"
+    assert role_step["roles"] == len(EXPECTED_ROLES)
+
+
+def test_roles_listing_returns_assignments(settings):
+    def handler(request):
+        if request.url.path == "/pulp/default/api/v3/groups/":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "results": [
+                        {
+                            "name": "dummy-alpha-users",
+                            "pulp_href": "/pulp/default/api/v3/groups/7/",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "count": 1,
+                "results": [
+                    {
+                        "role": "rpm.rpmrepository_creator",
+                        "content_object": None,
+                        "domain": "/pulp/default/api/v3/domains/1/",
+                    }
+                ],
+            },
+        )
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.get("/ui/api/tenants/roles?group=dummy-alpha-users")
+    assert response.status_code == 200
+    assert response.json()["assignments"] == [
+        {
+            "role": "rpm.rpmrepository_creator",
+            "content_object": None,
+            "domain": "/pulp/default/api/v3/domains/1/",
+        }
+    ]
+
+
+def test_roles_listing_rejects_unknown_group(settings):
+    def handler(request):
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.get("/ui/api/tenants/roles?group=missing")
+    assert response.status_code == 400

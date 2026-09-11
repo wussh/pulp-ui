@@ -8,6 +8,28 @@ from app.pulp import PulpError
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
+# Model-level content roles copied verbatim from the script's CONTENT_ROLES
+# (/home/wush/linsa/scripts/pulp/pulp-domain-rbac-setup.py). Both the *_creator
+# and *_owner role per plugin are required: without *_creator a non-superuser
+# group member gets 403 on every create inside the domain. These are MODEL-LEVEL
+# grants, assigned with content_object: null and domain: <href>.
+CONTENT_ROLES: tuple[str, ...] = (
+    "rpm.rpmrepository_creator",
+    "rpm.rpmrepository_owner",
+    "deb.aptrepository_creator",
+    "deb.aptrepository_owner",
+    "python.pythonrepository_creator",
+    "python.pythonrepository_owner",
+    "ansible.ansiblerepository_creator",
+    "ansible.ansiblerepository_owner",
+    "container.containerrepository_creator",
+    "container.containerrepository_owner",
+)
+
+# core.domain_owner manages the Domain object itself; core.domain_creator allows
+# creating objects within it. Both sit alongside the content roles above.
+ASSIGNED_ROLES: tuple[str, ...] = ("core.domain_owner", "core.domain_creator") + CONTENT_ROLES
+
 
 async def _first_match(client, path: str, field: str, value: str) -> dict | None:
     listing = await client.request("GET", path, params={field: value})
@@ -110,6 +132,9 @@ async def plan_setup(client, payload: dict) -> dict:
             "action": "assign",
             "resource": "role",
             "name": f"group={group} domain={domain}",
+            # Surface the real scope of the step: it creates one assignment per
+            # role in ASSIGNED_ROLES, not a single one.
+            "roles": len(ASSIGNED_ROLES),
         }
     )
 
@@ -122,7 +147,7 @@ async def plan_setup(client, payload: dict) -> dict:
         "preview": {
             "creates": sum(1 for step in steps if step["action"] == "create"),
             "reuses": sum(1 for step in steps if step["action"] == "reuse"),
-            "assignments": 1,
+            "assignments": len(ASSIGNED_ROLES),
         },
     }
 
@@ -133,16 +158,40 @@ async def _assign_domain_role(
     # Role assignment stays on the flat path: verified against live Pulp, roles are
     # granted per group, not per domain path. Confirm before changing.
     path = global_api(f"groups/{_record_id(group_record['pulp_href'])}/roles/")
-    return await client.request(
-        "POST",
-        path,
-        json_body={
-            "role": "core.domain_creator",
-            "content_object": None,
-            "domain": domain_record["pulp_href"],
-        },
-        correlation_id=correlation_id,
+    last: dict = {}
+    for role in ASSIGNED_ROLES:
+        last = await client.request(
+            "POST",
+            path,
+            json_body={
+                "role": role,
+                "content_object": None,
+                "domain": domain_record["pulp_href"],
+            },
+            correlation_id=correlation_id,
+        )
+    return last
+
+
+async def list_role_assignments(client, group: str) -> dict:
+    group = validate_name("group", group)
+    record = await _first_match(client, "/pulp/default/api/v3/groups/", "name", group)
+    if not record:
+        raise ValueError("group not found")
+    listing = await client.request(
+        "GET", global_api(f"groups/{_record_id(record['pulp_href'])}/roles/")
     )
+    return {
+        "group": group,
+        "assignments": [
+            {
+                "role": item.get("role"),
+                "content_object": item.get("content_object"),
+                "domain": item.get("domain"),
+            }
+            for item in listing.get("results", [])
+        ],
+    }
 
 
 async def apply_setup(client, plan: dict, correlation_id: str) -> dict:
@@ -253,6 +302,26 @@ async def tenants_api(request: Request) -> JSONResponse:
     client = request.app.state.client_factory()
     try:
         body = await list_tenants(client)
+    except PulpError as exc:
+        await client.aclose()
+        return JSONResponse(
+            {"error": exc.safe_message, "correlation_id": exc.correlation_id},
+            status_code=exc.status_code or 502,
+        )
+    await client.aclose()
+    return JSONResponse(body)
+
+
+@router.get("/api/tenants/roles")
+async def tenant_roles(request: Request) -> JSONResponse:
+    client = request.app.state.client_factory()
+    try:
+        body = await list_role_assignments(
+            client, request.query_params.get("group", "")
+        )
+    except ValueError as exc:
+        await client.aclose()
+        return JSONResponse({"error": str(exc)}, status_code=400)
     except PulpError as exc:
         await client.aclose()
         return JSONResponse(

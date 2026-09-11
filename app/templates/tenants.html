@@ -8,6 +8,26 @@
 <h3>Groups</h3>
 <ul>{% for group in groups %}<li>{{ group.name }}</li>{% endfor %}</ul>
 
+<h3>Role assignments</h3>
+<form id="roles-form">
+  <label>Group <input name="group" required></label>
+  <button type="submit">Look up</button>
+</form>
+<div id="roles-output"></div>
+<script>
+document.getElementById("roles-form").addEventListener("submit", function (event) {
+  event.preventDefault();
+  var group = new FormData(event.target).get("group");
+  fetch("/ui/api/tenants/roles?group=" + encodeURIComponent(group), {
+    credentials: "same-origin"
+  })
+    .then(function (response) { return response.json(); })
+    .then(function (body) {
+      document.getElementById("roles-output").textContent = JSON.stringify(body, null, 2);
+    });
+});
+</script>
+
 <h3>Guided tenant setup</h3>
 <form id="tenant-setup">
   <label>Domain <input name="domain" required></label>

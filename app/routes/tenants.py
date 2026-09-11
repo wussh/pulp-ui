@@ -26,6 +26,11 @@ CONTENT_ROLES: tuple[str, ...] = (
     "container.containerrepository_owner",
 )
 
+# Groups (and users) live in the `default` domain, not the tenant's domain: the
+# group-resource API paths are /pulp/default/api/v3/groups/. A role assignment is
+# still scoped to a tenant domain via the `domain` field in its body.
+_GLOBAL_DOMAIN = "default"
+
 # core.domain_owner manages the Domain object itself; core.domain_creator allows
 # creating objects within it. Both sit alongside the content roles above.
 ASSIGNED_ROLES: tuple[str, ...] = ("core.domain_owner", "core.domain_creator") + CONTENT_ROLES
@@ -152,25 +157,65 @@ async def plan_setup(client, payload: dict) -> dict:
     }
 
 
+async def _list_group_roles(client, api_domain: str, group_href: str) -> list[dict]:
+    """List a group's role assignments.
+
+    The listing is domain-scoped: the flat /pulp/api/v3 shape 404s. The POST that
+    creates an assignment stays flat (see _assign_domain_role).
+    """
+    listing = await client.request(
+        "GET", plugin_api(api_domain, f"groups/{_record_id(group_href)}/roles/")
+    )
+    return listing.get("results", [])
+
+
 async def _assign_domain_role(
     client, group_record: dict, domain_record: dict, correlation_id: str
 ) -> dict:
     # Role assignment stays on the flat path: verified against live Pulp, roles are
     # granted per group, not per domain path. Confirm before changing.
     path = global_api(f"groups/{_record_id(group_record['pulp_href'])}/roles/")
-    last: dict = {}
+    domain_href = domain_record["pulp_href"]
+    # Match on role + content_object + domain, exactly as the source script does,
+    # so a re-run is a no-op instead of re-POSTing every assignment.
+    existing = await _list_group_roles(
+        client, _GLOBAL_DOMAIN, group_record["pulp_href"]
+    )
+    assigned = {
+        (item.get("role"), item.get("content_object"), item.get("domain"))
+        for item in existing
+    }
+    created: list[str] = []
+    skipped: list[str] = []
+    task_hrefs: list[str] = []
     for role in ASSIGNED_ROLES:
-        last = await client.request(
+        if (role, None, domain_href) in assigned:
+            skipped.append(role)
+            continue
+        result = await client.request(
             "POST",
             path,
             json_body={
                 "role": role,
                 "content_object": None,
-                "domain": domain_record["pulp_href"],
+                "domain": domain_href,
             },
             correlation_id=correlation_id,
         )
-    return last
+        created.append(role)
+        task_href = result.get("task", "")
+        if task_href:
+            task_hrefs.append(task_href)
+    # Every sibling assignment's task is surfaced, not just the last one's, so the
+    # operator can follow all of them.
+    return {
+        "created": created,
+        "skipped": skipped,
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "task_hrefs": task_hrefs,
+        "task_href": task_hrefs[-1] if task_hrefs else "",
+    }
 
 
 async def list_role_assignments(client, domain: str, group: str) -> dict:
@@ -181,11 +226,7 @@ async def list_role_assignments(client, domain: str, group: str) -> dict:
     )
     if not record:
         raise ValueError("group not found")
-    # Listing a group's roles is domain-scoped; the flat /pulp/api/v3 shape 404s.
-    # Only the POST that assigns a role uses the global path (with domain in body).
-    listing = await client.request(
-        "GET", plugin_api(domain, f"groups/{_record_id(record['pulp_href'])}/roles/")
-    )
+    assignments = await _list_group_roles(client, domain, record["pulp_href"])
     return {
         "group": group,
         "assignments": [
@@ -194,7 +235,7 @@ async def list_role_assignments(client, domain: str, group: str) -> dict:
                 "content_object": item.get("content_object"),
                 "domain": item.get("domain"),
             }
-            for item in listing.get("results", [])
+            for item in assignments
         ],
     }
 
@@ -261,13 +302,18 @@ async def apply_setup(client, plan: dict, correlation_id: str) -> dict:
             }
         # Role assignment and several other steps answer 202 with a task; a step that
         # dropped the task href would leave the operator unable to follow progress.
-        completed.append(
-            {
-                **step,
-                "pulp_href": created.get("pulp_href", ""),
-                "task_href": created.get("task", ""),
-            }
-        )
+        if step["resource"] == "role":
+            # Surface the real outcome of the assignment step: how many were created
+            # vs already present, and every task href so all are followable.
+            completed.append({**step, **created})
+        else:
+            completed.append(
+                {
+                    **step,
+                    "pulp_href": created.get("pulp_href", ""),
+                    "task_href": created.get("task", ""),
+                }
+            )
 
     return {"correlation_id": correlation_id, "completed": completed, "failed": False}
 

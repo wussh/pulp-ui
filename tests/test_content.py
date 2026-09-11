@@ -990,3 +990,150 @@ def test_ansible_requirements_guard_rejects_empty_file(settings):
         with _pytest.raises(ValueError):
             _guard_ansible_requirements(bad)
     assert _guard_ansible_requirements("collections:\n  - name: a.b\n")
+
+
+def test_ansible_merge_preserves_roles_section_and_comments(settings):
+    # Regression: the merge used to rebuild the file from parsed collection names,
+    # silently deleting a `roles:` section and any comments the operator added.
+    import json
+
+    original = (
+        "# managed by platform team\n"
+        "collections:\n"
+        "  - name: community.general\n"
+        "\n"
+        "roles:\n"
+        "  - name: geerlingguy.docker\n"
+    )
+    seen = {}
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(
+                200, json={"pulp_href": ANSIBLE_REMOTE, "requirements_file": original}
+            )
+        if request.method == "PATCH":
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"pulp_href": ANSIBLE_REMOTE})
+        return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/s1/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/ansible/collections",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "remote_href": ANSIBLE_REMOTE,
+                "repository_href": ANSIBLE_REPO,
+                "names": ["ansible.posix"],
+            },
+        )
+    assert response.status_code == 200
+    sent = seen["body"]["requirements_file"]
+    # Operator content survives verbatim.
+    assert "# managed by platform team" in sent
+    assert "roles:\n  - name: geerlingguy.docker" in sent
+    # The new collection was added, sorted among the entries.
+    assert "  - name: ansible.posix\n" in sent
+    assert "  - name: community.general\n" in sent
+    assert sent.index("ansible.posix") < sent.index("community.general")
+
+
+def test_ansible_merge_refuses_unrecognised_shape(settings):
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "pulp_href": ANSIBLE_REMOTE,
+                    # No top-level `collections:` key at all.
+                    "requirements_file": "roles:\n  - name: geerlingguy.docker\n",
+                },
+            )
+        return httpx.Response(200, json={})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/ansible/collections",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "remote_href": ANSIBLE_REMOTE,
+                "repository_href": ANSIBLE_REPO,
+                "names": ["ansible.posix"],
+            },
+        )
+    assert response.status_code == 400
+    assert "directly" in response.json()["error"]
+    # Refused before any PATCH or sync.
+    assert calls == ["GET"]
+
+
+def test_ansible_merge_refuses_unparsable_entry(settings):
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "pulp_href": ANSIBLE_REMOTE,
+                    "requirements_file": "collections:\n  - src: some/thing\n",
+                },
+            )
+        return httpx.Response(200, json={})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/ansible/collections",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "remote_href": ANSIBLE_REMOTE,
+                "repository_href": ANSIBLE_REPO,
+                "names": ["ansible.posix"],
+            },
+        )
+    assert response.status_code == 400
+    assert calls == ["GET"]
+
+
+def test_pull_through_add_uses_bare_base_path_and_proxy_distribution_name(settings):
+    # Live convention on tbs-dev: remote `quay` with distribution `quay-proxy` and
+    # base_path `quay` (no `container/` prefix). The client URL is /v2/<domain>/quay/.
+    import json
+
+    seen = {}
+
+    def handler(request):
+        body = json.loads(request.content or b"{}")
+        if "/distributions/" in request.url.path:
+            seen["dist"] = body
+            return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/d1/"})
+        seen["remote"] = body
+        return httpx.Response(201, json={"pulp_href": request.url.path + "1/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/pull-through",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "name": "quay",
+                "base_path": "quay",
+                "upstream_url": "https://mirror.example.com",
+            },
+        )
+    assert response.status_code == 200
+    assert seen["remote"]["name"] == "quay"
+    assert seen["dist"]["name"] == "quay-proxy"
+    assert seen["dist"]["base_path"] == "quay"
+    assert not seen["dist"]["base_path"].startswith("container/")

@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
@@ -143,23 +145,104 @@ async def update_python_includes(client, payload: dict, correlation_id: str) -> 
 
 
 def _parse_ansible_requirements(raw) -> list[str]:
+    """Collection names under the top-level `collections:` block only.
+
+    Stops at the next top-level key, so a `roles:` entry is never mistaken for a
+    collection (which would make an unrelated role look like an existing package).
+    """
     collections: list[str] = []
     in_collections = False
     for line in str(raw or "").splitlines():
-        line = line.strip()
-        if line == "collections:":
+        stripped = line.strip()
+        if stripped == "collections:":
             in_collections = True
             continue
-        if in_collections and line.startswith("- name:"):
-            collections.append(line.split("- name:", 1)[1].strip())
+        if in_collections and stripped and not stripped.startswith("#") and not line[:1].isspace():
+            break
+        if in_collections and stripped.startswith("- name:"):
+            collections.append(stripped.split("- name:", 1)[1].strip())
     return collections
 
 
-def _build_ansible_requirements(names) -> str:
-    lines = ["collections:"]
-    for name in sorted(names):
-        lines.append(f"  - name: {name}")
-    return "\n".join(lines) + "\n"
+_ANSIBLE_ENTRY = re.compile(r"^(\s*)-\s+name:\s*(?P<name>\S.*?)\s*$")
+
+
+def _merge_ansible_requirements(raw: str, names: set[str]) -> str:
+    """Add `names` to the collections block, preserving every other line.
+
+    Treats requirements_file as the operator's document: lines that are not
+    collections entries (comments, blank lines, other top-level keys such as
+    `roles:`) are copied verbatim. The collections entries are rebuilt as the
+    sorted union. A shape we cannot confidently reason about is refused rather
+    than rewritten, so operator content is never silently deleted.
+    """
+    text = str(raw or "")
+    lines = text.splitlines()
+    header_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.strip() == "collections:" and not line[:1].isspace()
+        ),
+        None,
+    )
+    if header_index is None:
+        if text.strip():
+            raise ValueError(
+                "requirements_file uses a shape this UI does not recognise "
+                "(no top-level `collections:` block); edit the remote's "
+                "requirements_file directly instead"
+            )
+        # An empty file has no operator content to destroy; treat it as a fresh
+        # collections document.
+        lines = ["collections:"]
+        header_index = 0
+
+    # The collections block ends at the next top-level (unindented, non-blank,
+    # non-comment) key.
+    block_end = len(lines)
+    for index in range(header_index + 1, len(lines)):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[:1].isspace():
+            block_end = index
+            break
+
+    existing: list[str] = []
+    for index in range(header_index + 1, block_end):
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = _ANSIBLE_ENTRY.match(line)
+        if not match:
+            raise ValueError(
+                "requirements_file contains a collections entry this UI cannot "
+                "safely rewrite; edit the remote's requirements_file directly "
+                "instead"
+            )
+        existing.append(match.group("name"))
+
+    merged = sorted(set(existing) | names)
+    new_entries = [f"  - name: {name}" for name in merged]
+
+    result = lines[: header_index + 1]
+    inserted = False
+    for index in range(header_index + 1, block_end):
+        line = lines[index]
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            # Replace the old entry lines with the rebuilt, sorted entries.
+            if not inserted:
+                result.extend(new_entries)
+                inserted = True
+            continue
+        result.append(line)
+    if not inserted:
+        result.extend(new_entries)
+    result.extend(lines[block_end:])
+    return "\n".join(result) + "\n"
 
 
 def _guard_ansible_requirements(requirements_file: str) -> str:
@@ -183,18 +266,23 @@ async def update_ansible_collections(client, payload: dict, correlation_id: str)
     if not names:
         raise ValueError("at least one collection name is required")
     remote = await client.request("GET", remote_href, correlation_id=correlation_id)
-    current = set(_parse_ansible_requirements(remote.get("requirements_file")))
-    merged = sorted(current | names)
-    if merged == sorted(current):
+    current_file = str(remote.get("requirements_file") or "")
+    current = set(_parse_ansible_requirements(current_file))
+    # Merge into the operator's document rather than rebuilding it: anything besides
+    # collection entries must survive the PATCH untouched.
+    requirements_file = _merge_ansible_requirements(current_file, names)
+    merged = _parse_ansible_requirements(requirements_file)
+    if set(merged) == current:
         return {
             "changed": False,
             "collections": merged,
-            "requirements_file": str(remote.get("requirements_file") or ""),
+            "requirements_file": current_file,
             "task_href": "",
         }
-    requirements_file = _guard_ansible_requirements(
-        _build_ansible_requirements(merged)
-    )
+    # A sync with no requirements downloads all of galaxy.ansible.com and OOMs the
+    # worker. The merge always adds at least the submitted names, but this stays a
+    # standalone guard so no future refactor can send a requirements-less file.
+    _guard_ansible_requirements(requirements_file)
     await client.request(
         "PATCH",
         remote_href,
@@ -337,12 +425,15 @@ async def add_pull_through_registry(
         )
         completed.append({"resource": "remote", "pulp_href": remote.get("pulp_href", "")})
         # Two-step create: pull-through has no repository, so the distribution
-        # carries both base_path and the remote href directly.
+        # carries both base_path and the remote href directly. The operator names
+        # the remote; the distribution follows this cluster's `<name>-proxy`
+        # convention. base_path is the bare registry name — no `container/` prefix;
+        # the client URL is `/v2/<domain>/<base_path>/...`.
         dist = await client.request(
             "POST",
             plugin_api(domain, pull_through_path("distribution")),
             json_body={
-                "name": name,
+                "name": f"{name}-proxy",
                 "base_path": base_path,
                 "remote": remote.get("pulp_href", ""),
             },

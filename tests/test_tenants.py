@@ -382,3 +382,95 @@ def test_roles_listing_rejects_foreign_domain(settings):
         )
     assert response.status_code == 400
     assert calls == []
+
+
+def test_apply_reassigns_nothing_when_all_roles_present(settings):
+    # Regression: a re-apply re-POSTed all 12 assignments. The source script matches
+    # on role + content_object + domain first; so must the UI.
+    import json
+
+    domain_href = "/pulp/default/api/v3/domains/1/"
+    existing = [
+        {"role": role, "content_object": None, "domain": domain_href}
+        for role in EXPECTED_ROLES
+    ]
+    posts = []
+
+    def handler(request):
+        if request.method == "GET":
+            if "/roles/" in request.url.path:
+                return httpx.Response(
+                    200, json={"count": len(existing), "results": existing}
+                )
+            return httpx.Response(200, json={"count": 0, "results": []})
+        if request.url.path.endswith("/roles/"):
+            posts.append(json.loads(request.content))
+            return httpx.Response(202, json={"task": "/pulp/api/v3/tasks/r/"})
+        return httpx.Response(
+            201,
+            json={"name": "x", "username": "x", "pulp_href": request.url.path + "1/"},
+        )
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/tenants/apply",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "dummy-alpha",
+                "username": "budi-test",
+                "group": "dummy-alpha-users",
+            },
+        )
+    assert response.status_code == 200
+    assert posts == []
+    step = response.json()["completed"][-1]
+    assert step["created_count"] == 0
+    assert step["skipped_count"] == len(EXPECTED_ROLES)
+    assert step["task_hrefs"] == []
+
+
+def test_apply_creates_all_roles_and_returns_every_task_href(settings):
+    import json
+
+    posts = []
+    counter = {"n": 0}
+
+    def handler(request):
+        if request.method == "GET":
+            if "/roles/" in request.url.path:
+                return httpx.Response(200, json={"count": 0, "results": []})
+            return httpx.Response(200, json={"count": 0, "results": []})
+        if request.url.path.endswith("/roles/"):
+            posts.append(json.loads(request.content))
+            counter["n"] += 1
+            return httpx.Response(
+                202, json={"task": f"/pulp/api/v3/tasks/r{counter['n']}/"}
+            )
+        return httpx.Response(
+            201,
+            json={"name": "x", "username": "x", "pulp_href": request.url.path + "1/"},
+        )
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/tenants/apply",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "dummy-alpha",
+                "username": "budi-test",
+                "group": "dummy-alpha-users",
+            },
+        )
+    assert response.status_code == 200
+    step = response.json()["completed"][-1]
+    assert step["created_count"] == len(EXPECTED_ROLES)
+    assert step["skipped_count"] == 0
+    # Every sibling assignment's task is surfaced, not just the last one's.
+    assert len(step["task_hrefs"]) == len(EXPECTED_ROLES)
+    assert step["task_hrefs"][0] == "/pulp/api/v3/tasks/r1/"
+    assert step["task_hrefs"][-1] == f"/pulp/api/v3/tasks/r{len(EXPECTED_ROLES)}/"
+    for post in posts:
+        assert post["content_object"] is None
+        assert post["domain"] == "/pulp/default/api/v3/domains/1/"

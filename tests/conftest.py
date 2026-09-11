@@ -20,6 +20,16 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def resolvable_dns(monkeypatch):
+    # Tests must not depend on real DNS: allowlisted source hosts resolve to a public
+    # address. Tests asserting DNS failure override this with their own monkeypatch.
+    monkeypatch.setattr(
+        "app.safety.socket.getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+
+
 @pytest.fixture
 def settings(monkeypatch):
     from app.config import load_settings

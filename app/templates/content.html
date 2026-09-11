@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Content</h2>
+<form method="get" action="/ui/content">
+  <label>Domain <input name="domain" value="{{ domain }}"></label>
+  <button type="submit">Load</button>
+</form>
+{% if error %}<p class="warning">{{ error }}</p>{% endif %}
+{% for plugin, data in plugins.items() %}
+  <h3>{{ plugin }}</h3>
+  <h4>Repositories</h4>
+  <ul>{% for repo in data.repositories %}<li>{{ repo.name }}</li>{% endfor %}</ul>
+  <h4>Distributions</h4>
+  <ul>{% for dist in data.distributions %}<li>{{ dist.name }}</li>{% endfor %}</ul>
+{% endfor %}
+
+<h3>Create repository</h3>
+<form id="repo-form">
+  <label>Domain <input name="domain" value="{{ domain }}" required></label>
+  <label>Plugin
+    <select name="plugin">
+      {% for plugin in ["rpm", "deb", "python", "ansible", "container"] %}
+      <option value="{{ plugin }}">{{ plugin }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Name <input name="name" required></label>
+  <button type="submit">Create</button>
+</form>
+<div id="repo-output"></div>
+<script>
+document.getElementById("repo-form").addEventListener("submit", function (event) {
+  event.preventDefault();
+  var payload = Object.fromEntries(new FormData(event.target).entries());
+  window.pulpOps.postJSON("/ui/api/content/repository", payload).then(function (body) {
+    document.getElementById("repo-output").textContent = JSON.stringify(body, null, 2);
+  });
+});
+</script>
+{% endblock %}

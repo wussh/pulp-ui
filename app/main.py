@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
-from app.routes import overview, tenants
+from app.routes import content, overview, tenants
 from app.state import ActivityStore, CorrelationStore, RunStore
 
 STATIC_DIR = "app/static"
@@ -43,4 +43,5 @@ def create_app(settings: Settings, client_factory=None) -> FastAPI:
     app.mount("/ui/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(overview.router, prefix="/ui")
     app.include_router(tenants.router, prefix="/ui")
+    app.include_router(content.router, prefix="/ui")
     return app

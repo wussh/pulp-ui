@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Tenants</h2>
+<h3>Domains</h3>
+<ul>{% for domain in domains %}<li>{{ domain.name }}</li>{% endfor %}</ul>
+<h3>Users</h3>
+<ul>{% for user in users %}<li>{{ user.username }}</li>{% endfor %}</ul>
+<h3>Groups</h3>
+<ul>{% for group in groups %}<li>{{ group.name }}</li>{% endfor %}</ul>
+
+<h3>Guided tenant setup</h3>
+<form id="tenant-setup">
+  <label>Domain <input name="domain" required></label>
+  <label>Username <input name="username" required></label>
+  <label>Group <input name="group" required></label>
+  <button type="button" id="plan-button">Preview</button>
+  <div id="plan-output"></div>
+  <button type="submit" disabled id="apply-button">Apply</button>
+</form>
+<script>
+document.getElementById("plan-button").addEventListener("click", function () {
+  var payload = Object.fromEntries(
+    new FormData(document.getElementById("tenant-setup")).entries()
+  );
+  window.pulpOps.postJSON("/ui/api/tenants/plan", payload).then(function (body) {
+    document.getElementById("plan-output").textContent = JSON.stringify(body, null, 2);
+    document.getElementById("apply-button").disabled = Boolean(body.error);
+  });
+});
+document.getElementById("tenant-setup").addEventListener("submit", function (event) {
+  event.preventDefault();
+  var payload = Object.fromEntries(new FormData(event.target).entries());
+  window.pulpOps.postJSON("/ui/api/tenants/apply", payload).then(function (body) {
+    document.getElementById("plan-output").textContent = JSON.stringify(body, null, 2);
+  });
+});
+</script>
+{% endblock %}

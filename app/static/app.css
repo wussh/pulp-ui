@@ -14,3 +14,9 @@ section { margin-bottom: 1.5rem; }
 section h4 { margin-bottom: 0.25rem; }
 pre { background: #f3f4f6; padding: 0.5rem 0.75rem; overflow-x: auto; }
 code { background: #f3f4f6; padding: 0.05rem 0.25rem; }
+.guide h2 { margin-top: 2rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.35rem; }
+.guide h3 { margin-top: 1.5rem; }
+.guide p.note { background: #eff6ff; border-left: 4px solid #2563eb; padding: 0.5rem 0.75rem; }
+.guide pre { max-width: 100%; }
+.guide table { margin: 1rem 0; }
+.guide hr { border: 0; border-top: 1px solid #e5e7eb; margin: 2rem 0; }

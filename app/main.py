@@ -7,6 +7,7 @@ from app.logging_config import configure_logging
 from app.middleware import BasicAuthMiddleware, CsrfMiddleware
 from app.routes import (
     activity,
+    admin,
     content,
     destroy,
     help as help_routes,
@@ -67,4 +68,5 @@ def create_app(settings: Settings, client_factory=None) -> FastAPI:
     app.include_router(destroy.router, prefix="/ui")
     app.include_router(activity.router, prefix="/ui")
     app.include_router(help_routes.router, prefix="/ui")
+    app.include_router(admin.router, prefix="/ui")
     return app

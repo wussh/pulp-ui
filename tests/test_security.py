@@ -46,3 +46,12 @@ def test_csrf_rejects_wrong_secret_nonce_and_garbage():
     assert validate_csrf("secret", "different", token) is False
     assert validate_csrf("secret", nonce, "garbage") is False
     assert validate_csrf("secret", None, None) is False
+
+
+def test_check_credentials_rejects_non_ascii_username(settings):
+    assert check_credentials("é", "s3cret", settings) is False
+
+
+def test_validate_csrf_rejects_non_ascii_input():
+    assert validate_csrf("secret", "abc", "é.xx") is False
+    assert validate_csrf("secret", "é", "é.xx") is False

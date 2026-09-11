@@ -44,7 +44,9 @@ def verify_password(password: str, encoded: str) -> bool:
 
 
 def check_credentials(username: str, password: str, settings: Settings) -> bool:
-    username_ok = hmac.compare_digest(username, settings.ui_username)
+    username_ok = hmac.compare_digest(
+        username.encode("utf-8"), settings.ui_username.encode("utf-8")
+    )
     password_ok = verify_password(password, settings.ui_password_hash)
     return username_ok & password_ok
 
@@ -64,9 +66,9 @@ def validate_csrf(secret: str, nonce: str | None, token: str | None) -> bool:
         token_nonce, signature = token.split(".", 1)
     except ValueError:
         return False
-    if not hmac.compare_digest(token_nonce, nonce):
+    if not hmac.compare_digest(token_nonce.encode("utf-8"), nonce.encode("utf-8")):
         return False
     expected = hmac.new(
         secret.encode("utf-8"), nonce.encode("utf-8"), hashlib.sha256
     ).hexdigest()
-    return hmac.compare_digest(signature, expected)
+    return hmac.compare_digest(signature.encode("utf-8"), expected.encode("utf-8"))

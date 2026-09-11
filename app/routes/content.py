@@ -38,6 +38,7 @@ async def list_content(client, domain: str) -> dict:
 
 
 def _require_repository_href(domain: str, plugin: str, href: str) -> str:
+    href = str(href or "")
     expected_prefix = plugin_api(domain, f"repositories/{plugin}/{plugin}/")
     if not href.startswith(expected_prefix):
         raise ValueError("repository href is not valid for this domain and plugin")
@@ -67,7 +68,10 @@ async def create_distribution(client, payload: dict, correlation_id: str) -> dic
     )
     body: dict = {"name": name, "repository": repository_href}
     if plugin == "container":
-        base_path = (payload.get("base_path") or "").strip().strip("/")
+        raw_base_path = payload.get("base_path")
+        if raw_base_path is not None and not isinstance(raw_base_path, str):
+            raise ValueError("base_path must be a string")
+        base_path = (raw_base_path or "").strip().strip("/")
         if not base_path:
             raise ValueError("base_path is required for container distributions")
         body["base_path"] = base_path
@@ -86,30 +90,40 @@ async def start_sync(client, payload: dict, correlation_id: str, settings) -> di
         domain, plugin, payload.get("repository_href", "")
     )
     remote_url = validate_source_url(
-        payload.get("remote_url", ""), settings.allowed_source_hosts
+        str(payload.get("remote_url") or ""), settings.allowed_source_hosts
     )
+    # The correlation id is unique per attempt, so a retry after a failed sync never
+    # collides with Pulp's per-plugin remote-name uniqueness constraint.
+    remote_name = validate_name("remote", f"sync-{correlation_id}")
     remote = await client.request(
         "POST",
         plugin_api(domain, f"remotes/{plugin}/{plugin}/"),
-        json_body={
-            "name": validate_name(
-                "remote", payload.get("remote_name") or "sync-remote"
-            ),
-            "url": remote_url,
-        },
+        json_body={"name": remote_name, "url": remote_url},
         correlation_id=correlation_id,
     )
-    result = await client.request(
-        "POST",
-        plugin_api(domain, f"repositories/{plugin}/{plugin}/")
-        + f"{_record_id(repository_href)}/sync/",
-        json_body={"remote": remote["pulp_href"]},
-        correlation_id=correlation_id,
-    )
+    remote_href = remote.get("pulp_href", "")
+    try:
+        result = await client.request(
+            "POST",
+            plugin_api(domain, f"repositories/{plugin}/{plugin}/")
+            + f"{_record_id(repository_href)}/sync/",
+            json_body={"remote": remote_href},
+            correlation_id=correlation_id,
+        )
+    except PulpError as exc:
+        # The sync failed but the remote was created: report it so the operator can
+        # retry without orphaning the remote.
+        return {
+            "task_href": "",
+            "correlation_id": correlation_id,
+            "remote_href": remote_href,
+            "error": exc.safe_message,
+            "failed": True,
+        }
     return {
         "task_href": result.get("task", ""),
         "correlation_id": correlation_id,
-        "remote_href": remote.get("pulp_href", ""),
+        "remote_href": remote_href,
     }
 
 
@@ -129,12 +143,14 @@ async def _guarded(request: Request, handler) -> JSONResponse:
             status_code=exc.status_code or 502,
         )
     await client.aclose()
-    return JSONResponse({"correlation_id": correlation_id, **result})
+    body = {"correlation_id": correlation_id, **result}
+    return JSONResponse(body, status_code=400 if result.get("failed") else 200)
 
 
 @router.get("/content", response_class=HTMLResponse)
 async def content_page(request: Request) -> HTMLResponse:
     domain = request.query_params.get("domain", "default")
+    choices = list(CONTENT_PLUGINS)
     client = request.app.state.client_factory()
     try:
         data = await list_content(client, domain)
@@ -146,6 +162,7 @@ async def content_page(request: Request) -> HTMLResponse:
             {
                 "error": str(exc),
                 "plugins": {},
+                "plugin_choices": choices,
                 "domain": domain,
                 "warnings": [],
                 "current_user": "operator",
@@ -160,6 +177,7 @@ async def content_page(request: Request) -> HTMLResponse:
             {
                 "error": exc.safe_message,
                 "plugins": {},
+                "plugin_choices": choices,
                 "domain": domain,
                 "warnings": [],
                 "current_user": "operator",
@@ -168,7 +186,9 @@ async def content_page(request: Request) -> HTMLResponse:
         )
     await client.aclose()
     return templates.TemplateResponse(
-        request, "content.html", {**data, "warnings": [], "current_user": "operator"}
+        request,
+        "content.html",
+        {**data, "plugin_choices": choices, "warnings": [], "current_user": "operator"},
     )
 
 
@@ -214,6 +234,15 @@ async def distribution_create(
 ) -> JSONResponse:
     async def handler(client, correlation_id):
         created = await create_distribution(client, payload, correlation_id)
+        request.app.state.activity.record(
+            {
+                "correlation_id": correlation_id,
+                "operator": "operator",
+                "action": "content.distribution.create",
+                "target": payload.get("name", ""),
+                "result": "completed",
+            }
+        )
         return {"pulp_href": created.get("pulp_href", "")}
 
     return await _guarded(request, handler)
@@ -222,8 +251,18 @@ async def distribution_create(
 @router.post("/api/content/sync")
 async def sync_start(request: Request, payload: dict = Body(...)) -> JSONResponse:
     async def handler(client, correlation_id):
-        return await start_sync(
+        result = await start_sync(
             client, payload, correlation_id, request.app.state.settings
         )
+        request.app.state.activity.record(
+            {
+                "correlation_id": correlation_id,
+                "operator": "operator",
+                "action": "content.sync",
+                "target": payload.get("repository_href", ""),
+                "result": "failed" if result.get("failed") else "completed",
+            }
+        )
+        return result
 
     return await _guarded(request, handler)

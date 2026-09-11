@@ -12,7 +12,7 @@ CONTENT_PLUGINS: dict[str, str] = {
 
 
 def validate_name(kind: str, value: str) -> str:
-    value = (value or "").strip()
+    value = value.strip() if isinstance(value, str) else ""
     if not _NAME_PATTERN.match(value):
         raise ValueError(
             f"{kind} must be 1-63 characters of lowercase letters, digits, hyphen, "
@@ -22,7 +22,7 @@ def validate_name(kind: str, value: str) -> str:
 
 
 def validate_plugin(value: str) -> str:
-    if value not in CONTENT_PLUGINS:
+    if not isinstance(value, str) or value not in CONTENT_PLUGINS:
         raise ValueError("unsupported content plugin")
     return value
 

@@ -1,4 +1,5 @@
 import ipaddress
+import socket
 
 import pytest
 
@@ -58,11 +59,21 @@ def test_validate_source_url_rejects_private_resolution(monkeypatch):
         "224.0.0.1",
         "::1",
         "fe80::1",
+        "fec0::1",
         "fd00::1",
     ],
 )
 def test_is_forbidden_address_rejects_internal_ranges(address):
     assert is_forbidden_address(ipaddress.ip_address(address)) is True
+
+
+def test_validate_source_url_rejects_dns_failure(monkeypatch):
+    def raise_gaierror(*args, **kwargs):
+        raise socket.gaierror("Name or service not known")
+
+    monkeypatch.setattr("app.safety.socket.getaddrinfo", raise_gaierror)
+    with pytest.raises(ValueError):
+        validate_source_url("https://mirror.example.com/", ("mirror.example.com",))
 
 
 def test_is_forbidden_address_allows_public():

@@ -44,3 +44,15 @@ def test_validate_plugin_rejects_unknown():
     assert validate_plugin("rpm") == "rpm"
     with pytest.raises(ValueError):
         validate_plugin("../../etc/passwd")
+
+
+def test_validate_name_rejects_non_str():
+    for bad in [123, None, ["a"], {"a": 1}, b"a"]:
+        with pytest.raises(ValueError):
+            validate_name("domain", bad)
+
+
+def test_validate_plugin_rejects_non_str():
+    for bad in [123, None, ["rpm"], {"plugin": "rpm"}]:
+        with pytest.raises(ValueError):
+            validate_plugin(bad)

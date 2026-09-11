@@ -1,8 +1,7 @@
 import httpx
-from fastapi.testclient import TestClient
 
 from app.main import create_app
-from tests.helpers import make_client
+from tests.helpers import authed_client, make_client
 
 
 def test_task_list_filters_by_state(settings):
@@ -21,7 +20,7 @@ def test_task_list_filters_by_state(settings):
         )
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.get("/ui/api/tasks?domain=default&state=failed").json()
     assert body["tasks"][0]["state"] == "failed"
     assert seen["params"]["state"] == "failed"
@@ -32,7 +31,7 @@ def test_task_list_rejects_unknown_state(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.get("/ui/api/tasks?domain=default&state=bogus")
     assert response.status_code == 400
 
@@ -42,7 +41,7 @@ def test_task_detail_rejects_foreign_href(settings):
         return httpx.Response(200, json={})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.get(
             "/ui/api/tasks/detail?domain=default&href=/pulp/dummy-beta/api/v3/tasks/1/"
         )
@@ -60,7 +59,7 @@ def test_task_detail_truncates_progress_reports(settings):
         )
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.get(
             "/ui/api/tasks/detail?domain=default&href=/pulp/default/api/v3/tasks/1/"
         ).json()
@@ -76,7 +75,7 @@ def test_task_detail_accepts_non_default_domain_href(settings):
         return httpx.Response(200, json={"state": "completed"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.get(
             "/ui/api/tasks/detail?domain=dummy-beta&href=/pulp/dummy-beta/api/v3/tasks/1/"
         )
@@ -90,7 +89,7 @@ def test_task_detail_omitted_domain_rejects_non_default_href(settings):
         return httpx.Response(200, json={"state": "completed"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.get(
             "/ui/api/tasks/detail?href=/pulp/dummy-beta/api/v3/tasks/1/"
         )
@@ -102,7 +101,7 @@ def test_task_detail_rejects_mismatched_domain(settings):
         return httpx.Response(200, json={"state": "completed"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.get(
             "/ui/api/tasks/detail?domain=dummy-alpha&href=/pulp/dummy-beta/api/v3/tasks/1/"
         )
@@ -117,7 +116,7 @@ def test_task_detail_error_shape_is_string_coerced(settings):
         )
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.get(
             "/ui/api/tasks/detail?domain=default&href=/pulp/default/api/v3/tasks/1/"
         ).json()
@@ -131,7 +130,7 @@ def test_task_detail_page_passes_domain_to_poller(settings):
         return httpx.Response(200, json={"state": "running"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.get(
             "/ui/tasks/detail?domain=dummy-beta&href=/pulp/dummy-beta/api/v3/tasks/1/"
         )

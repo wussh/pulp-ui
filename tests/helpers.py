@@ -1,6 +1,19 @@
+import base64
+
 import httpx
+from fastapi.testclient import TestClient
 
 from app.pulp import PulpClient
+
+AUTH_HEADERS = {
+    "Authorization": "Basic "
+    + base64.b64encode(b"operator:s3cret").decode("ascii")
+}
+
+
+def authed_client(app) -> TestClient:
+    """TestClient carrying the configured operator's Basic Auth on every request."""
+    return TestClient(app, headers=AUTH_HEADERS)
 
 
 def make_client(settings, handler) -> PulpClient:

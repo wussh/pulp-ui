@@ -1,8 +1,7 @@
 import httpx
-from fastapi.testclient import TestClient
 
 from app.main import create_app
-from tests.helpers import make_client
+from tests.helpers import authed_client, csrf_headers, make_client
 
 
 def test_plan_setup_reuses_existing_domain(settings):
@@ -23,9 +22,10 @@ def test_plan_setup_reuses_existing_domain(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.post(
             "/ui/api/tenants/plan",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "dummy-alpha",
                 "username": "budi-test",
@@ -51,9 +51,10 @@ def test_apply_setup_stops_on_first_failure(settings):
         return httpx.Response(201, json={"pulp_href": "/pulp/default/api/v3/domains/1/"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/tenants/apply",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "dummy-alpha",
                 "username": "budi-test",
@@ -75,9 +76,10 @@ def test_plan_reports_probe_warnings_on_4xx(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/tenants/plan",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "dummy-alpha",
                 "username": "budi-test",
@@ -104,9 +106,10 @@ def test_plan_propagates_upstream_5xx(settings):
         return httpx.Response(500, json={"detail": "internal server error"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/tenants/plan",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "dummy-alpha",
                 "username": "budi-test",
@@ -125,9 +128,10 @@ def test_apply_includes_recovery_guidance(settings):
         return httpx.Response(201, json={"pulp_href": "/pulp/default/api/v3/domains/1/"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/tenants/apply",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "dummy-alpha",
                 "username": "budi-test",
@@ -148,9 +152,10 @@ def test_plan_rejects_invalid_domain(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/tenants/plan",
+            headers=csrf_headers(test_client),
             json={"domain": "../admin", "username": "budi-test", "group": "g"},
         )
     assert response.status_code == 400

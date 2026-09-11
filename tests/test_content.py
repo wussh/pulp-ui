@@ -1,9 +1,8 @@
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from app.main import create_app
-from tests.helpers import make_client
+from tests.helpers import authed_client, csrf_headers, make_client
 
 REPO_PATHS = {
     "rpm": "/pulp/default/api/v3/repositories/rpm/rpm/",
@@ -23,9 +22,10 @@ def test_create_repository_uses_plugin_scoped_endpoint(settings, plugin, path):
         return httpx.Response(201, json={"pulp_href": path + "abc/"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/content/repository",
+            headers=csrf_headers(test_client),
             json={"domain": "default", "plugin": plugin, "name": "demo-repo"},
         )
     assert response.status_code == 200
@@ -37,9 +37,10 @@ def test_create_repository_rejects_unknown_plugin(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/content/repository",
+            headers=csrf_headers(test_client),
             json={"domain": "default", "plugin": "shell", "name": "x"},
         )
     assert response.status_code == 400
@@ -50,9 +51,10 @@ def test_container_distribution_requires_base_path(settings):
         return httpx.Response(201, json={"pulp_href": "/pulp/default/api/v3/x/1/"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/content/distribution",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "default",
                 "plugin": "container",
@@ -69,9 +71,10 @@ def test_sync_rejects_non_allowlisted_source(settings):
         return httpx.Response(201, json={"pulp_href": "/pulp/default/api/v3/x/1/"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/content/sync",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "default",
                 "plugin": "rpm",
@@ -89,9 +92,10 @@ def test_sync_returns_task_href(settings):
         return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/xyz/"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/content/sync",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "default",
                 "plugin": "rpm",
@@ -108,7 +112,7 @@ def test_content_listing_covers_every_plugin(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.get("/ui/api/content?domain=default").json()
     assert set(body["plugins"]) == {"rpm", "deb", "python", "ansible", "container"}
 
@@ -136,8 +140,9 @@ def test_non_string_browser_input_is_rejected(settings, payload):
         return httpx.Response(201, json={"pulp_href": "/pulp/default/api/v3/x/1/"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
-        response = test_client.post("/ui/api/content/distribution", json=payload)
+    with authed_client(app) as test_client:
+        response = test_client.post("/ui/api/content/distribution", headers=csrf_headers(test_client),
+        json=payload)
     assert response.status_code == 400
 
 
@@ -153,9 +158,10 @@ def test_distribution_rejects_foreign_or_collection_href(settings, href):
         return httpx.Response(201, json={"pulp_href": "/pulp/default/api/v3/x/1/"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/content/distribution",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "default",
                 "plugin": "rpm",
@@ -171,9 +177,10 @@ def test_distribution_records_activity(settings):
         return httpx.Response(201, json={"pulp_href": REPO_PATHS["rpm"] + "abc/"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/content/distribution",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "default",
                 "plugin": "rpm",
@@ -194,9 +201,10 @@ def test_sync_records_activity(settings):
         return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/xyz/"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/content/sync",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "default",
                 "plugin": "rpm",
@@ -222,9 +230,10 @@ def test_sync_failure_still_reports_created_remote(settings):
         return httpx.Response(500, json={})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/content/sync",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "default",
                 "plugin": "rpm",

@@ -1,8 +1,7 @@
 import httpx
-from fastapi.testclient import TestClient
 
 from app.main import create_app
-from tests.helpers import make_client
+from tests.helpers import authed_client, csrf_headers, make_client
 
 REPO_HREF = "/pulp/default/api/v3/repositories/rpm/rpm/abc/"
 
@@ -13,7 +12,7 @@ def test_preview_returns_current_resource_details(settings):
         return httpx.Response(200, json={"name": "demo-repo", "pulp_href": REPO_HREF})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.get(
             f"/ui/delete/preview?domain=default&href={REPO_HREF}"
         ).json()
@@ -31,9 +30,10 @@ def test_delete_requires_confirmation(settings):
         return httpx.Response(200, json={"name": "demo-repo", "pulp_href": REPO_HREF})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/delete",
+            headers=csrf_headers(test_client),
             json={"domain": "default", "href": REPO_HREF, "confirmed": False},
         )
     assert response.status_code == 400
@@ -50,9 +50,10 @@ def test_delete_refetches_then_deletes_exact_href(settings):
         return httpx.Response(200, json={"name": "demo-repo", "pulp_href": REPO_HREF})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.post(
             "/ui/api/delete",
+            headers=csrf_headers(test_client),
             json={"domain": "default", "href": REPO_HREF, "confirmed": True},
         ).json()
     assert seen == [("GET", REPO_HREF), ("GET", REPO_HREF), ("DELETE", REPO_HREF)]
@@ -64,9 +65,10 @@ def test_delete_rejects_href_outside_requested_domain(settings):
         return httpx.Response(200, json={})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/delete",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "default",
                 "href": "/pulp/dummy-beta/api/v3/repositories/rpm/rpm/abc/",
@@ -81,9 +83,10 @@ def test_delete_rejects_collection_href(settings):
         return httpx.Response(200, json={})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/delete",
+            headers=csrf_headers(test_client),
             json={
                 "domain": "default",
                 "href": "/pulp/default/api/v3/repositories/rpm/rpm/",

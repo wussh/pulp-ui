@@ -1,7 +1,7 @@
-from fastapi.testclient import TestClient
 
 from app.logging_config import redact
 from app.main import create_app
+from tests.helpers import authed_client
 
 
 def test_redact_removes_credentials_and_bodies():
@@ -36,7 +36,7 @@ def test_activity_endpoint_lists_recorded_entries(settings):
             return None
 
     app = create_app(settings, client_factory=lambda: StubClient())
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         app.state.activity.record(
             {
                 "correlation_id": "c1",
@@ -60,7 +60,7 @@ def test_activity_limit_is_capped(settings):
             return None
 
     app = create_app(settings, client_factory=lambda: StubClient())
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         for index in range(300):
             app.state.activity.record(
                 {

@@ -1,10 +1,9 @@
 import httpx
-from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.routes.overview import check_public_route
 from app.state import ActivityStore
-from tests.helpers import make_client
+from tests.helpers import authed_client, make_client
 
 
 def ok_handler(payload_by_path):
@@ -43,7 +42,7 @@ def test_overview_reports_counts_and_routing_failure(settings, monkeypatch):
     app = create_app(
         settings, client_factory=lambda: make_client(settings, ok_handler(payloads))
     )
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.get("/ui/api/overview").json()
     assert body["pulp"]["reachable"] is True
     assert body["pulp"]["core_version"] == "3.116.0"
@@ -64,7 +63,7 @@ def test_overview_handles_unreachable_pulp(settings, monkeypatch):
     app = create_app(
         settings, client_factory=lambda: make_client(settings, failing_handler)
     )
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.get("/ui/api/overview").json()
     assert body["pulp"]["reachable"] is False
     assert body["counts"] == {}
@@ -83,7 +82,7 @@ def test_overview_page_renders_snapshot_value(settings, monkeypatch):
         settings,
         client_factory=lambda: make_client(settings, ok_handler(payloads)),
     )
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.get("/ui/")
     assert response.status_code == 200
     assert "Overview" in response.text

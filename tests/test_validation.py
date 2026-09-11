@@ -1,8 +1,7 @@
 import httpx
-from fastapi.testclient import TestClient
 
 from app.main import create_app
-from tests.helpers import make_client
+from tests.helpers import authed_client, csrf_headers, make_client
 
 REPO_COLLECTION = "/pulp/default/api/v3/repositories/rpm/rpm/"
 
@@ -19,9 +18,10 @@ def test_validation_records_each_assertion_and_resource(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.post(
-            "/ui/api/validation/run", json={"domain": "default"}
+            "/ui/api/validation/run", headers=csrf_headers(test_client),
+            json={"domain": "default"}
         ).json()
     assert body["run_id"]
     assert [item["name"] for item in body["assertions"]] == list(
@@ -38,9 +38,10 @@ def test_validation_reports_failure_when_creation_fails(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.post(
-            "/ui/api/validation/run", json={"domain": "default"}
+            "/ui/api/validation/run", headers=csrf_headers(test_client),
+            json={"domain": "default"}
         ).json()
     statuses = {item["name"]: item["status"] for item in body["assertions"]}
     assert statuses["resource_creation"] == "FAIL"
@@ -59,12 +60,14 @@ def test_cleanup_only_deletes_recorded_resources(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         run = test_client.post(
-            "/ui/api/validation/run", json={"domain": "default"}
+            "/ui/api/validation/run", headers=csrf_headers(test_client),
+            json={"domain": "default"}
         ).json()
         body = test_client.post(
-            "/ui/api/validation/cleanup", json={"run_id": run["run_id"]}
+            "/ui/api/validation/cleanup", headers=csrf_headers(test_client),
+            json={"run_id": run["run_id"]}
         ).json()
     assert deleted == [REPO_COLLECTION + "1/"]
     assert body["deleted"] == [REPO_COLLECTION + "1/"]
@@ -75,9 +78,10 @@ def test_cleanup_rejects_unknown_run(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
-            "/ui/api/validation/cleanup", json={"run_id": "nope"}
+            "/ui/api/validation/cleanup", headers=csrf_headers(test_client),
+            json={"run_id": "nope"}
         )
     assert response.status_code == 400
 
@@ -91,13 +95,16 @@ def test_cleanup_run_is_single_use(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         run = test_client.post(
-            "/ui/api/validation/run", json={"domain": "default"}
+            "/ui/api/validation/run", headers=csrf_headers(test_client),
+            json={"domain": "default"}
         ).json()
-        test_client.post("/ui/api/validation/cleanup", json={"run_id": run["run_id"]})
+        test_client.post("/ui/api/validation/cleanup", headers=csrf_headers(test_client),
+        json={"run_id": run["run_id"]})
         second = test_client.post(
-            "/ui/api/validation/cleanup", json={"run_id": run["run_id"]}
+            "/ui/api/validation/cleanup", headers=csrf_headers(test_client),
+            json={"run_id": run["run_id"]}
         )
     assert second.status_code == 400
 
@@ -120,9 +127,10 @@ def test_isolation_fails_when_foreign_domain_leaks_created_href(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.post(
-            "/ui/api/validation/run", json={"domain": "default"}
+            "/ui/api/validation/run", headers=csrf_headers(test_client),
+            json={"domain": "default"}
         ).json()
     statuses = {item["name"]: item["status"] for item in body["assertions"]}
     assert statuses["domain_isolation"] == "FAIL"
@@ -139,9 +147,10 @@ def test_isolation_fails_when_creation_fails(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         body = test_client.post(
-            "/ui/api/validation/run", json={"domain": "default"}
+            "/ui/api/validation/run", headers=csrf_headers(test_client),
+            json={"domain": "default"}
         ).json()
     statuses = {item["name"]: item["status"] for item in body["assertions"]}
     assert statuses["domain_isolation"] == "FAIL"
@@ -156,9 +165,10 @@ def test_cleanup_rejects_unknown_run_records_failed_activity(settings):
         return httpx.Response(200, json={"count": 0, "results": []})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
-    with TestClient(app) as test_client:
+    with authed_client(app) as test_client:
         response = test_client.post(
-            "/ui/api/validation/cleanup", json={"run_id": "nope"}
+            "/ui/api/validation/cleanup", headers=csrf_headers(test_client),
+            json={"run_id": "nope"}
         )
     assert response.status_code == 400
     entries = app.state.activity.recent()

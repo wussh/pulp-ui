@@ -4,8 +4,11 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
 from app.logging_config import configure_logging
+from app.middleware import BasicAuthMiddleware, CsrfMiddleware
 from app.routes import activity, content, destroy, overview, tasks, tenants, validation
 from app.state import ActivityStore, CorrelationStore, RunStore
+
+configure_logging()
 
 STATIC_DIR = "app/static"
 
@@ -27,6 +30,9 @@ def create_app(settings: Settings, client_factory=None) -> FastAPI:
     app.state.correlations = CorrelationStore()
     app.state.activity = ActivityStore()
     app.state.runs = RunStore()
+
+    app.add_middleware(CsrfMiddleware)
+    app.add_middleware(BasicAuthMiddleware)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

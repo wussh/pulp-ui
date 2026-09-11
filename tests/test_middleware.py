@@ -93,3 +93,33 @@ def test_password_never_appears_in_response(settings):
         body = client.get("/ui/api/activity", headers=creds()).text
     assert "s3cret" not in body
     assert "Basic " not in body
+
+
+def test_csrf_token_survives_intervening_safe_gets(settings):
+    # task_detail.html polls a safe GET every 2s; the browser captures the token once
+    # at load, so the nonce must not rotate under it.
+    with TestClient(build_app(settings)) as client:
+        first = client.get("/ui/api/activity", headers=creds()).headers["X-CSRF-Token"]
+        client.get("/ui/api/activity", headers=creds())
+        response = client.post(
+            "/ui/api/delete",
+            headers={**creds(), "X-CSRF-Token": first},
+            json={
+                "domain": "default",
+                "href": "/pulp/default/api/v3/repositories/rpm/rpm/abc/",
+                "confirmed": False,
+            },
+        )
+    assert response.status_code != 403
+
+
+def test_tampered_csrf_signature_is_rejected(settings):
+    with TestClient(build_app(settings)) as client:
+        token = client.get("/ui/api/activity", headers=creds()).headers["X-CSRF-Token"]
+        nonce = token.split(".", 1)[0]
+        response = client.post(
+            "/ui/api/delete",
+            headers={**creds(), "X-CSRF-Token": f"{nonce}.deadbeef"},
+            json={"domain": "default", "href": "/x", "confirmed": True},
+        )
+    assert response.status_code == 403

@@ -42,15 +42,23 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         request.state.username = username
         response = await call_next(request)
         if request.method in _SAFE_METHODS and response.status_code < 400:
-            nonce, token = issue_csrf(settings.session_secret)
-            response.set_cookie(
-                CSRF_COOKIE,
-                nonce,
-                httponly=False,
-                samesite="strict",
-                secure=request.url.scheme == "https",
-                path="/ui",
-            )
+            # Reuse the existing nonce so a client that captured the token once keeps
+            # working across safe GETs (e.g. the task-detail poll). Rotate only when
+            # there is no cookie, or the accompanying token fails validation.
+            nonce = request.cookies.get(CSRF_COOKIE)
+            token = request.headers.get(CSRF_HEADER)
+            if not nonce or (token and not validate_csrf(settings.session_secret, nonce, token)):
+                nonce, token = issue_csrf(settings.session_secret)
+                response.set_cookie(
+                    CSRF_COOKIE,
+                    nonce,
+                    httponly=False,
+                    samesite="strict",
+                    secure=request.url.scheme == "https",
+                    path="/ui",
+                )
+            else:
+                _, token = issue_csrf(settings.session_secret, nonce)
             response.headers[CSRF_HEADER] = token
         return response
 

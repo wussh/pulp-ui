@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Activity</h2>
+<p class="subtitle">In-process only. Entries disappear when the pod restarts.</p>
+<table>
+  <thead><tr><th>Action</th><th>Target</th><th>Result</th><th>Correlation</th></tr></thead>
+  <tbody>
+  {% for entry in entries %}
+    <tr>
+      <td>{{ entry.action }}</td>
+      <td>{{ entry.target }}</td>
+      <td>{{ entry.result }}</td>
+      <td>{{ entry.correlation_id }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

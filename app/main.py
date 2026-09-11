@@ -3,13 +3,16 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
-from app.routes import content, destroy, overview, tasks, tenants, validation
+from app.logging_config import configure_logging
+from app.routes import activity, content, destroy, overview, tasks, tenants, validation
 from app.state import ActivityStore, CorrelationStore, RunStore
 
 STATIC_DIR = "app/static"
 
 
 def create_app(settings: Settings, client_factory=None) -> FastAPI:
+    configure_logging()
+
     def build_client():
         from app.pulp import PulpClient
 
@@ -47,4 +50,5 @@ def create_app(settings: Settings, client_factory=None) -> FastAPI:
     app.include_router(tasks.router, prefix="/ui")
     app.include_router(validation.router, prefix="/ui")
     app.include_router(destroy.router, prefix="/ui")
+    app.include_router(activity.router, prefix="/ui")
     return app

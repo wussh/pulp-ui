@@ -232,8 +232,10 @@ def test_plan_rejects_invalid_domain(settings):
 # --- Feature 4: complete tenant content role assignments ----------------------
 
 EXPECTED_ROLES = [
+    # core.domain_owner is assigned OBJECT-LEVEL (content_object = domain href,
+    # domain = null). core.domain_creator is intentionally absent: Pulp rejects it
+    # for a domain-scoped assignment, verified live.
     "core.domain_owner",
-    "core.domain_creator",
     "rpm.rpmrepository_creator",
     "rpm.rpmrepository_owner",
     "deb.aptrepository_creator",
@@ -276,9 +278,16 @@ def test_apply_assigns_owner_creator_and_content_roles(settings):
         )
     assert response.status_code == 200
     assert [post["role"] for post in role_posts] == EXPECTED_ROLES
+    # The metadata role is object-level, the content roles model-level. See the
+    # longer note in test_apply_creates_all_roles_and_returns_every_task_href.
+    domain_href = "/pulp/default/api/v3/domains/1/"
     for post in role_posts:
-        assert post["content_object"] is None
-        assert post["domain"] == "/pulp/default/api/v3/domains/1/"
+        if post["role"] == "core.domain_owner":
+            assert post["content_object"] == domain_href
+            assert post["domain"] is None
+        else:
+            assert post["content_object"] is None
+            assert post["domain"] == domain_href
 
 
 def test_plan_preview_reports_role_assignment_count(settings):
@@ -394,6 +403,11 @@ def test_apply_reassigns_nothing_when_all_roles_present(settings):
         {"role": role, "content_object": None, "domain": domain_href}
         for role in EXPECTED_ROLES
     ]
+    # The metadata role is already present too — object-level, so it carries the
+    # domain as its content_object and no `domain` field.
+    existing.append(
+        {"role": "core.domain_owner", "content_object": domain_href, "domain": None}
+    )
     posts = []
 
     def handler(request):
@@ -471,9 +485,20 @@ def test_apply_creates_all_roles_and_returns_every_task_href(settings):
     assert len(step["task_hrefs"]) == len(EXPECTED_ROLES)
     assert step["task_hrefs"][0] == "/pulp/api/v3/tasks/r1/"
     assert step["task_hrefs"][-1] == f"/pulp/api/v3/tasks/r{len(EXPECTED_ROLES)}/"
-    for post in posts:
+    # Two body shapes, and Pulp treats them differently:
+    #   - the domain metadata role is OBJECT-LEVEL: content_object=domain, domain=None
+    #     (`domain` together with `content_object` is rejected as "mutually exclusive")
+    #   - the content roles are MODEL-LEVEL: content_object=None, domain=domain href
+    domain_href = "/pulp/default/api/v3/domains/1/"
+    metadata = [p for p in posts if p["role"] == "core.domain_owner"]
+    content = [p for p in posts if p["role"] != "core.domain_owner"]
+    assert len(metadata) == 1
+    assert metadata[0]["content_object"] == domain_href
+    assert metadata[0]["domain"] is None
+    assert content, "expected content-role assignments"
+    for post in content:
         assert post["content_object"] is None
-        assert post["domain"] == "/pulp/default/api/v3/domains/1/"
+        assert post["domain"] == domain_href
 
 
 # --- Feature A: create a domain with custom storage --------------------------

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from app.endpoints import global_api, plugin_api, validate_name
+from app.endpoints import plugin_api, validate_name
 from app.k8s import SecretError
 from app.pulp import PulpError
 
@@ -34,9 +34,18 @@ CONTENT_ROLES: tuple[str, ...] = (
 # still scoped to a tenant domain via the `domain` field in its body.
 _GLOBAL_DOMAIN = "default"
 
-# core.domain_owner manages the Domain object itself; core.domain_creator allows
-# creating objects within it. Both sit alongside the content roles above.
-ASSIGNED_ROLES: tuple[str, ...] = ("core.domain_owner", "core.domain_creator") + CONTENT_ROLES
+# core.domain_owner manages the Domain object itself. It is assigned OBJECT-LEVEL
+# (content_object = the domain href, domain = null) — Pulp rejects `domain` together
+# with `content_object` as "mutually exclusive".
+DOMAIN_METADATA_ROLE = "core.domain_owner"
+# The content roles are model-level: content_object = null, domain = the domain href.
+# Verified live against tbs-dev: posting a content role that way returns 201.
+#
+# `core.domain_creator` is deliberately NOT here. It exists as a role, but Pulp
+# rejects it for a domain-scoped assignment with "does not carry any permission on
+# an object with a domain". The source script pulp-domain-rbac-setup.py does not use
+# it either. Including it made every tenant apply fail at the role step.
+ASSIGNED_ROLES: tuple[str, ...] = CONTENT_ROLES
 
 
 async def _first_match(client, path: str, field: str, value: str) -> dict | None:
@@ -190,7 +199,7 @@ async def plan_setup(client, payload: dict) -> dict:
             "name": f"group={group} domain={domain}",
             # Surface the real scope of the step: it creates one assignment per
             # role in ASSIGNED_ROLES, not a single one.
-            "roles": len(ASSIGNED_ROLES),
+            "roles": len(ASSIGNED_ROLES) + 1,  # content roles + the domain metadata role
         }
     )
 
@@ -209,7 +218,7 @@ async def plan_setup(client, payload: dict) -> dict:
         "preview": {
             "creates": sum(1 for step in steps if step["action"] == "create"),
             "reuses": sum(1 for step in steps if step["action"] == "reuse"),
-            "assignments": len(ASSIGNED_ROLES),
+            "assignments": len(ASSIGNED_ROLES) + 1,  # content roles + metadata role
         },
     }
 
@@ -229,9 +238,11 @@ async def _list_group_roles(client, api_domain: str, group_href: str) -> list[di
 async def _assign_domain_role(
     client, group_record: dict, domain_record: dict, correlation_id: str
 ) -> dict:
-    # Role assignment stays on the flat path: verified against live Pulp, roles are
-    # granted per group, not per domain path. Confirm before changing.
-    path = global_api(f"groups/{_record_id(group_record['pulp_href'])}/roles/")
+    # The assignment path is DOMAIN-SCOPED, like the listing. The flat
+    # /pulp/api/v3/groups/<id>/roles/ shape returns 404. Verified live against
+    # tbs-dev: posting to that flat path 404s, posting to the domain-scoped path 201s.
+    group_id = _record_id(group_record["pulp_href"])
+    path = plugin_api(_GLOBAL_DOMAIN, f"groups/{group_id}/roles/")
     domain_href = domain_record["pulp_href"]
     # Match on role + content_object + domain, exactly as the source script does,
     # so a re-run is a no-op instead of re-POSTing every assignment.
@@ -245,8 +256,14 @@ async def _assign_domain_role(
     created: list[str] = []
     skipped: list[str] = []
     task_hrefs: list[str] = []
-    for role in ASSIGNED_ROLES:
-        if (role, None, domain_href) in assigned:
+    # (role, content_object, domain) — the object-level metadata role and the
+    # model-level content roles take DIFFERENT bodies. Pulp rejects `domain` together
+    # with a `content_object` as "mutually exclusive", verified live.
+    plan_body = [(DOMAIN_METADATA_ROLE, domain_href, None)] + [
+        (role, None, domain_href) for role in ASSIGNED_ROLES
+    ]
+    for role, content_object, scope_domain in plan_body:
+        if (role, content_object, scope_domain) in assigned:
             skipped.append(role)
             continue
         result = await client.request(
@@ -254,8 +271,8 @@ async def _assign_domain_role(
             path,
             json_body={
                 "role": role,
-                "content_object": None,
-                "domain": domain_href,
+                "content_object": content_object,
+                "domain": scope_domain,
             },
             correlation_id=correlation_id,
         )

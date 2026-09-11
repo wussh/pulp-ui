@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Validation</h2>
+<p class="subtitle">Creates uniquely named test resources, then cleans only the hrefs it recorded.</p>
+<form id="validation-form">
+  <label>Domain <input name="domain" value="default" required></label>
+  <button type="submit">Run isolation validation</button>
+</form>
+<div id="validation-output"></div>
+<script>
+document.getElementById("validation-form").addEventListener("submit", function (event) {
+  event.preventDefault();
+  var payload = Object.fromEntries(new FormData(event.target).entries());
+  window.pulpOps.postJSON("/ui/api/validation/run", payload).then(function (body) {
+    var lines = (body.assertions || []).map(function (item) {
+      return item.status + " " + item.name + " — " + item.evidence;
+    });
+    if (body.run_id) { lines.push("run_id=" + body.run_id); }
+    if (body.error) { lines.push("error=" + body.error); }
+    document.getElementById("validation-output").textContent = lines.join("\n");
+  });
+});
+</script>
+{% endblock %}

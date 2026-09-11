@@ -48,7 +48,11 @@ PUBLICATION_SEGMENTS: dict[str, str] = {
 PULL_THROUGH_SEGMENT = "container/pull-through"
 
 # Only container distributions take the `base_path` field.
-_BASE_PATH_PLUGINS = frozenset({"container"})
+# Every plugin's distribution requires a base_path. Verified live against tbs-dev:
+# rpm, python, and ansible all answer `{"base_path": ["This field is required."]}`
+# when it is omitted. The name is historical — it used to hold only container — and
+# the function below is kept as the single place that answers the question.
+_BASE_PATH_PLUGINS = frozenset({"rpm", "deb", "python", "ansible", "container"})
 
 _KIND_COLLECTION = {
     "repository": "repositories",

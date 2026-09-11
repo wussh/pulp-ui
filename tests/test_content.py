@@ -63,10 +63,9 @@ def test_create_distribution_uses_plugin_scoped_endpoint(settings, plugin, path)
         "domain": "default",
         "plugin": plugin,
         "name": "demo-dist",
+        "base_path": "demo",
         "repository_href": REPO_PATHS[plugin] + "abc/",
     }
-    if plugin == "container":
-        payload["base_path"] = "demo"
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
     with authed_client(app) as test_client:
         response = test_client.post(
@@ -94,6 +93,7 @@ def test_async_distribution_creation_surfaces_task_href(settings):
             json={
                 "domain": "default",
                 "plugin": "rpm",
+                "base_path": "demo",
                 "name": "demo-dist",
                 "repository_href": REPO_PATHS["rpm"] + "abc/",
             },
@@ -136,14 +136,44 @@ def test_deb_repository_href_uses_apt_segment(settings):
     assert _require_repository_href("default", "deb", href) == href
 
 
-def test_python_distribution_does_not_require_base_path(settings):
-    seen = {}
+def test_every_plugin_distribution_requires_base_path(settings):
+    """Pulp requires base_path on EVERY plugin's distribution.
+
+    Verified live against tbs-dev: rpm, python, and ansible each answer
+    `{"base_path": ["This field is required."]}` when it is omitted. An earlier
+    version of this feature sent base_path only for container, so creating any
+    other distribution always failed with a Pulp 400.
+    """
 
     def handler(request):
-        seen["path"] = request.url.path
-        return httpx.Response(201, json={"pulp_href": DISTRIBUTION_PATHS["python"] + "1/"})
+        return httpx.Response(201, json={"pulp_href": request.url.path + "1/"})
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    for plugin in ("rpm", "deb", "python", "ansible", "container"):
+        with authed_client(app) as test_client:
+            response = test_client.post(
+                "/ui/api/content/distribution",
+                headers=csrf_headers(test_client),
+                json={
+                    "domain": "default",
+                    "plugin": plugin,
+                    "name": "demo",
+                    "base_path": "demo",
+                    "repository_href": REPO_PATHS[plugin] + "abc/",
+                },
+            )
+        assert response.status_code == 200, plugin
+
+    # And omitting it is refused before any upstream call.
+    calls = []
+
+    def recording_handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(201, json={"pulp_href": "/x/"})
+
+    app = create_app(
+        settings, client_factory=lambda: make_client(settings, recording_handler)
+    )
     with authed_client(app) as test_client:
         response = test_client.post(
             "/ui/api/content/distribution",
@@ -155,8 +185,8 @@ def test_python_distribution_does_not_require_base_path(settings):
                 "repository_href": REPO_PATHS["python"] + "abc/",
             },
         )
-    assert response.status_code == 200
-    assert seen["path"] == DISTRIBUTION_PATHS["python"]
+    assert response.status_code == 400
+    assert calls == []
 
 
 def test_create_repository_rejects_unknown_plugin(settings):
@@ -337,6 +367,7 @@ def test_distribution_rejects_foreign_or_collection_href(settings, href):
             json={
                 "domain": "default",
                 "plugin": "rpm",
+                "base_path": "demo",
                 "name": "demo",
                 "repository_href": href,
             },
@@ -356,6 +387,7 @@ def test_distribution_records_activity(settings):
             json={
                 "domain": "default",
                 "plugin": "rpm",
+                "base_path": "demo",
                 "name": "demo-dist",
                 "repository_href": REPO_PATHS["rpm"] + "abc/",
             },

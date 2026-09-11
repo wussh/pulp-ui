@@ -495,7 +495,9 @@ async def create_distribution(client, payload: dict, correlation_id: str) -> dic
             raise ValueError("base_path must be a string")
         base_path = (raw_base_path or "").strip().strip("/")
         if not base_path:
-            raise ValueError("base_path is required for container distributions")
+            # Pulp requires base_path on EVERY plugin's distribution, not just
+            # container — verified live, all plugins answer "This field is required."
+            raise ValueError("base_path is required")
         body["base_path"] = base_path
     return await client.request(
         "POST",

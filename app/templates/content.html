@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Content</h2>
+<form method="get" action="/ui/content">
+  <label>Domain <input name="domain" value="{{ domain }}"></label>
+  <button type="submit">Load</button>
+</form>
+{% if error %}<p class="warning">{{ error }}</p>{% endif %}
+{% for plugin, data in plugins.items() %}
+  <h3>{{ plugin }}</h3>
+  {% if data.error %}<p class="warning">Plugin {{ plugin }} failed: {{ data.error }}</p>{% endif %}
+  <h4>Repositories</h4>
+  <ul>{% for repo in data.repositories %}<li>{{ repo.name }} — {{ repo.pulp_href }}</li>{% endfor %}</ul>
+  <h4>Distributions</h4>
+  <ul>{% for dist in data.distributions %}<li>{{ dist.name }} — {{ dist.pulp_href }}</li>{% endfor %}</ul>
+{% endfor %}
+
+<h3>Create repository</h3>
+<form id="repo-form">
+  <label>Domain <input name="domain" value="{{ domain }}" required></label>
+  <label>Plugin
+    <select name="plugin">
+      {% for plugin in plugin_choices %}
+      <option value="{{ plugin }}">{{ plugin }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Name <input name="name" required></label>
+  <button type="submit">Create</button>
+</form>
+<div id="repo-output"></div>
+
+<h3>Create distribution</h3>
+<form id="distribution-form">
+  <label>Domain <input name="domain" value="{{ domain }}" required></label>
+  <label>Plugin
+    <select name="plugin">
+      {% for plugin in plugin_choices %}
+      <option value="{{ plugin }}">{{ plugin }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Name <input name="name" required></label>
+  <label>Repository href <input name="repository_href" required></label>
+  <label>Base path (container only) <input name="base_path"></label>
+  <button type="submit">Create</button>
+</form>
+<div id="distribution-output"></div>
+
+<h3>Sync repository</h3>
+<form id="sync-form">
+  <label>Domain <input name="domain" value="{{ domain }}" required></label>
+  <label>Plugin
+    <select name="plugin">
+      {% for plugin in plugin_choices %}
+      <option value="{{ plugin }}">{{ plugin }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Repository href <input name="repository_href" required></label>
+  <label>Remote URL <input name="remote_url" required></label>
+  <button type="submit">Sync</button>
+</form>
+<div id="sync-output"></div>
+
+<script>
+function bindContentForm(formId, outputId, url, onBody) {
+  document.getElementById(formId).addEventListener("submit", function (event) {
+    event.preventDefault();
+    var payload = Object.fromEntries(new FormData(event.target).entries());
+    window.pulpOps.postJSON(url, payload).then(function (body) {
+      document.getElementById(outputId).textContent = JSON.stringify(body, null, 2);
+      if (onBody) {
+        onBody(payload, body);
+      }
+    });
+  });
+}
+
+function followTask(payload, body) {
+  if (body.task_href) {
+    window.location.href =
+      "/ui/tasks/detail?domain=" + encodeURIComponent(payload.domain) +
+      "&href=" + encodeURIComponent(body.task_href);
+  }
+}
+
+bindContentForm("repo-form", "repo-output", "/ui/api/content/repository");
+bindContentForm(
+  "distribution-form", "distribution-output", "/ui/api/content/distribution", followTask
+);
+bindContentForm("sync-form", "sync-output", "/ui/api/content/sync", followTask);
+</script>
+{% endblock %}

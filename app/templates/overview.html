@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Overview</h2>
+<dl class="facts">
+  <dt>Internal Pulp API</dt><dd>{{ snapshot.pulp.reachable }}</dd>
+  <dt>Core version</dt><dd>{{ snapshot.pulp.core_version }}</dd>
+  <dt>Public route status</dt><dd>{{ snapshot.routing.public_status }}</dd>
+</dl>
+<table class="counts">
+  <caption>Resource counts</caption>
+  <tbody>
+  {% for name, value in snapshot.counts.items() %}
+    <tr><th>{{ name }}</th><td>{{ value }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

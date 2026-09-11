@@ -62,6 +62,9 @@ def in_memory_secrets(monkeypatch):
     its own `secrets_factory=<FakeSecretsStore>`.
     """
     from app import main as app_main
-    from tests.helpers import FakeSecretsStore
+    from tests.helpers import FakeConfigMapStore, FakeSecretsStore
 
     monkeypatch.setattr(app_main, "SecretsStore", lambda settings: FakeSecretsStore())
+    monkeypatch.setattr(
+        app_main, "ConfigMapStore", lambda settings: FakeConfigMapStore()
+    )

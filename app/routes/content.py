@@ -17,6 +17,7 @@ from app.endpoints import (
     validate_plugin,
     validate_python_package,
 )
+from app.allowlist import effective_allowlist
 from app.pulp import PulpError
 from app.safety import validate_source_url
 
@@ -408,7 +409,11 @@ async def list_pull_through(client, domain: str) -> dict:
 
 
 async def add_pull_through_registry(
-    client, payload: dict, correlation_id: str, settings
+    client,
+    payload: dict,
+    correlation_id: str,
+    settings,
+    configmap_store=None,
 ) -> dict:
     domain = validate_name("domain", payload.get("domain", ""))
     name = validate_name("registry", payload.get("name", ""))
@@ -418,9 +423,12 @@ async def add_pull_through_registry(
     base_path = raw_base_path.strip().strip("/")
     if not base_path:
         raise ValueError("base_path is required")
-    # Reuse the shared SSRF guard rather than re-implementing host checks.
+    # Reuse the shared SSRF guard rather than re-implementing host checks. The
+    # allowlist is resolved live from the fixed ConfigMap so a UI edit takes effect
+    # without a restart; `settings.allowed_source_hosts` is the startup fallback.
     upstream_url = validate_source_url(
-        str(payload.get("upstream_url") or ""), settings.allowed_source_hosts
+        str(payload.get("upstream_url") or ""),
+        await effective_allowlist(configmap_store, settings),
     )
     completed: list[dict] = []
     try:
@@ -507,14 +515,17 @@ async def create_distribution(client, payload: dict, correlation_id: str) -> dic
     )
 
 
-async def start_sync(client, payload: dict, correlation_id: str, settings) -> dict:
+async def start_sync(
+    client, payload: dict, correlation_id: str, settings, configmap_store
+) -> dict:
     domain = validate_name("domain", payload.get("domain", ""))
     plugin = validate_plugin(payload.get("plugin", ""))
     repository_href = _require_repository_href(
         domain, plugin, payload.get("repository_href", "")
     )
     remote_url = validate_source_url(
-        str(payload.get("remote_url") or ""), settings.allowed_source_hosts
+        str(payload.get("remote_url") or ""),
+        await effective_allowlist(configmap_store, settings),
     )
     # The correlation id is unique per attempt, so a retry after a failed sync never
     # collides with Pulp's per-plugin remote-name uniqueness constraint.
@@ -763,9 +774,13 @@ async def ansible_collections(
 @router.post("/api/content/pull-through")
 async def pull_through_add(request: Request, payload: dict = Body(...)) -> JSONResponse:
     async def handler(client, correlation_id):
-        result = await add_pull_through_registry(
-            client, payload, correlation_id, request.app.state.settings
-        )
+        store = request.app.state.configmap_factory()
+        try:
+            result = await add_pull_through_registry(
+                client, payload, correlation_id, request.app.state.settings, store
+            )
+        finally:
+            await store.aclose()
         request.app.state.activity.record(
             {
                 "correlation_id": correlation_id,
@@ -822,9 +837,17 @@ async def link(request: Request, payload: dict = Body(...)) -> JSONResponse:
 @router.post("/api/content/sync")
 async def sync_start(request: Request, payload: dict = Body(...)) -> JSONResponse:
     async def handler(client, correlation_id):
-        result = await start_sync(
-            client, payload, correlation_id, request.app.state.settings
-        )
+        store = request.app.state.configmap_factory()
+        try:
+            result = await start_sync(
+                client,
+                payload,
+                correlation_id,
+                request.app.state.settings,
+                store,
+            )
+        finally:
+            await store.aclose()
         request.app.state.activity.record(
             {
                 "correlation_id": correlation_id,

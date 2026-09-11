@@ -3,11 +3,12 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
-from app.k8s import SecretsStore
+from app.k8s import ConfigMapStore, SecretsStore
 from app.logging_config import configure_logging
 from app.middleware import BasicAuthMiddleware, CsrfMiddleware
 from app.routes import (
     activity,
+    allowlist as allowlist_routes,
     content,
     destroy,
     help as help_routes,
@@ -29,6 +30,7 @@ def create_app(
     client_factory=None,
     secrets_factory=None,
     tenant_client_factory=None,
+    configmap_factory=None,
 ) -> FastAPI:
     configure_logging()
 
@@ -52,6 +54,13 @@ def create_app(
         return SecretsStore(settings)
 
     app.state.secrets_factory = secrets_factory or build_secrets
+
+    # The one ConfigMap this app reads and writes (the sync source-host allowlist).
+    # Fixed name/namespace/key live in app.k8s; each route builds one and closes it.
+    def build_configmap():
+        return ConfigMapStore(settings)
+
+    app.state.configmap_factory = configmap_factory or build_configmap
 
     def build_tenant_client(credentials):
         # A second Pulp client authenticated as the tenant rather than the admin.
@@ -86,6 +95,7 @@ def create_app(
     app.include_router(tasks.router, prefix="/ui")
     app.include_router(validation.router, prefix="/ui")
     app.include_router(secrets_routes.router, prefix="/ui")
+    app.include_router(allowlist_routes.router, prefix="/ui")
     app.include_router(destroy.router, prefix="/ui")
     app.include_router(activity.router, prefix="/ui")
     app.include_router(help_routes.router, prefix="/ui")

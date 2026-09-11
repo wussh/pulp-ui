@@ -33,6 +33,13 @@ POSTGRES_CREDENTIALS_SECRET = "pulp-postgres-credentials"
 # Read from the prod namespace. Exactly one name; see the RBAC file.
 EVEREST_DB_SECRET = "everest-secrets-db-pulp"
 
+# The one ConfigMap the UI may read and write, fixed here so no request body can
+# redirect the write to another object. The RBAC Role pins the same name with
+# resourceNames as the cluster-side guard.
+CONFIGMAP_NAME = "pulp-ops-config"
+CONFIGMAP_NAMESPACE = "pulp"
+CONFIGMAP_ALLOWED_HOSTS_KEY = "ALLOWED_SOURCE_HOSTS"
+
 
 class SecretError(Exception):
     """A Kubernetes API failure safe to surface to the operator."""
@@ -83,15 +90,17 @@ class KubernetesClient:
         path: str,
         *,
         json_body: dict | None = None,
+        content_type: str = "application/json",
     ) -> httpx.Response:
         # Never log the token or a Secret body. Path only.
         logger.info(
             "k8s.request %s",
             redact({"method": method, "path": path}),
         )
+        headers = {**self._headers(), "Content-Type": content_type}
         try:
             return await self._client.request(
-                method, path, headers=self._headers(), json=json_body
+                method, path, headers=headers, json=json_body
             )
         except httpx.HTTPError as exc:
             raise SecretError("Kubernetes API request failed.") from exc
@@ -261,6 +270,80 @@ class SecretsStore:
         if not username or not password:
             return None
         return username, password
+
+class ConfigMapStore:
+    """Read and update exactly one ConfigMap key.
+
+    Name, namespace, and key are module constants, never request input: a request
+    cannot name a different object or a different key.
+    """
+
+    def __init__(self, settings, client: KubernetesClient | None = None) -> None:
+        self._settings = settings
+        self._client = client or KubernetesClient(settings)
+        self._owns_client = client is None
+        self._namespace = CONFIGMAP_NAMESPACE or settings.k8s_namespace
+
+    @property
+    def client(self) -> KubernetesClient:
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
+
+    @property
+    def _path(self) -> str:
+        return f"/api/v1/namespaces/{self._namespace}/configmaps/{CONFIGMAP_NAME}"
+
+    async def get_value(self, key: str, *, correlation_id: str = "") -> str | None:
+        """The ConfigMap key's value; None if the object or key is absent.
+
+        None (absent) and "" (present but empty) are distinct so a caller can tell
+        "the ConfigMap says zero hosts" from "there is no ConfigMap override".
+
+        Reads no Secret and no other key: the key is checked before any request.
+        """
+        self._require_key(key)
+        response = await self._client.request("GET", self._path)
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 400:
+            raise SecretError(
+                "Kubernetes API rejected the request.", correlation_id=correlation_id
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise SecretError(
+                "Kubernetes API returned a malformed response.",
+                correlation_id=correlation_id,
+            ) from exc
+        data = payload.get("data") or {}
+        if key not in data:
+            return None
+        return str(data.get(key, ""))
+
+    async def set_value(self, key: str, value: str, *, correlation_id: str = "") -> None:
+        """Patch exactly one key, leaving every other key untouched."""
+        self._require_key(key)
+        response = await self._client.request(
+            "PATCH",
+            self._path,
+            # merge-patch: only the named key is changed, siblings are preserved.
+            json_body={"data": {key: value}},
+            content_type="application/merge-patch+json",
+        )
+        if response.status_code >= 400:
+            raise SecretError(
+                "Kubernetes API rejected the request.", correlation_id=correlation_id
+            )
+
+    @staticmethod
+    def _require_key(key: str) -> None:
+        if key != CONFIGMAP_ALLOWED_HOSTS_KEY:
+            raise SecretError("config key is not on the allowlist.")
+
 
 def _decoded_values(payload: dict | None) -> dict[str, str]:
     """base64-decode a Secret's data map. Values never leave this module's callers."""

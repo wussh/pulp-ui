@@ -98,6 +98,36 @@ class FakeSecretsStore:
         return self.everest
 
 
+class FakeConfigMapStore:
+    """In-memory stand-in for ConfigMapStore.
+
+    Records every write as {"key", "value"} so a test can assert the exact key and
+    canonicalized value, and counts reads so a no-op can be shown to skip the write.
+    """
+
+    def __init__(self, data=None):
+        self.data = dict(data or {})
+        self.writes: list[dict] = []
+        self.reads = 0
+        self.closed = False
+        self.raised = None
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+    async def get_value(self, key, *, correlation_id=""):
+        if self.raised:
+            raise self.raised
+        self.reads += 1
+        return self.data.get(key)
+
+    async def set_value(self, key, value, *, correlation_id=""):
+        if self.raised:
+            raise self.raised
+        self.writes.append({"key": key, "value": value})
+        self.data[key] = value
+
+
 def csrf_headers(client) -> dict:
     """Fetch a safe GET so the server issues its CSRF token, then return headers."""
     response = client.get("/ui/api/activity?limit=1")

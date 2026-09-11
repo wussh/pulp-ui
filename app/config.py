@@ -1,3 +1,4 @@
+import ipaddress
 import os
 from dataclasses import dataclass
 
@@ -61,12 +62,68 @@ class Settings:
     k8s_prod_namespace: str
 
 
+MAX_ALLOWED_SOURCE_HOSTS = 50
+MAX_HOSTNAME_LENGTH = 253
+
+
+def parse_allowed_source_hosts(value: str) -> tuple[str, ...]:
+    """Lenient startup parse: strip, lowercase, drop blanks. Matches env behaviour."""
+    return tuple(
+        host.strip().lower() for host in (value or "").split(",") if host.strip()
+    )
+
+
+def canonicalize_allowed_source_hosts(value: str) -> tuple[str, ...]:
+    """Validate and canonicalize a comma-separated host allowlist.
+
+    Raises ValueError with an operator-safe message. The canonical form is
+    lowercase, deduplicated, and sorted, so an unchanged submission is detected by
+    string comparison and never triggers a write.
+    """
+    raw = value if isinstance(value, str) else ""
+    if raw.strip() == "":
+        return ()
+    entries = raw.split(",")
+    cleaned: list[str] = []
+    for entry in entries:
+        host = entry.strip().lower()
+        if not host:
+            # A ",," or a trailing comma is rejected rather than silently dropped.
+            raise ValueError("allowlist contains an empty entry")
+        if len(host) > MAX_HOSTNAME_LENGTH:
+            raise ValueError(f"hostname exceeds {MAX_HOSTNAME_LENGTH} characters")
+        if any(char in host for char in "/:*@") or any(
+            char.isspace() for char in host
+        ):
+            raise ValueError(
+                f"hostname {host!r} must be a bare hostname "
+                "(no scheme, port, path, wildcard, or credentials)"
+            )
+        if host.startswith("."):
+            raise ValueError(f"hostname {host!r} must not start with a dot")
+        if host in (".", ".."):
+            raise ValueError(f"hostname {host!r} is not a hostname")
+        if ".." in host or host.startswith("-") or host.endswith("-"):
+            raise ValueError(f"hostname {host!r} is not a valid hostname")
+        # Reject IP literals: hosts must be names. validate_source_url already
+        # resolves the name and vets every returned address, so an IP literal adds
+        # no reachable capability while removing the DNS-name intent of the list.
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            raise ValueError(f"hostname {host!r} must not be an IP literal")
+        cleaned.append(host)
+    if len(cleaned) > MAX_ALLOWED_SOURCE_HOSTS:
+        raise ValueError(
+            f"allowlist holds at most {MAX_ALLOWED_SOURCE_HOSTS} entries"
+        )
+    return tuple(sorted(set(cleaned)))
+
+
 def load_settings() -> Settings:
-    hosts = [
-        host.strip().lower()
-        for host in os.environ.get("ALLOWED_SOURCE_HOSTS", "").split(",")
-        if host.strip()
-    ]
+    hosts = parse_allowed_source_hosts(os.environ.get("ALLOWED_SOURCE_HOSTS", ""))
     token_path = _env(
         "K8S_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"
     )

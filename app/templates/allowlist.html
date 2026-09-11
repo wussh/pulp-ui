@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Sync Source Hosts — Pulp Operator UI{% endblock %}
+{% block content %}
+<h2>Sync Source Hosts</h2>
+<p class="subtitle">
+  The allowlist <code>POST /ui/api/content/sync</code> and
+  <code>POST /ui/api/content/pull-through</code> use to vet the remote URL. The value
+  below is the effective list the running process is using, read from the
+  <code>{{ configmap }}</code> ConfigMap key <code>{{ key }}</code>.
+</p>
+
+<p class="warning">
+  This control guards against server-side request forgery: it is what stops a sync
+  remote from pointing at internal addresses reachable from inside the cluster.
+  Editing it from the UI weakens it — anyone with the UI credential can allowlist an
+  arbitrary host. Changes take effect immediately, with no pod restart.
+</p>
+
+<p class="subtitle">
+  Effective list (<span id="source">{{ source }}</span>):
+  <strong id="current">{{ value }}</strong>
+  — {{ count }} host{{ "" if count == 1 else "s" }}.
+</p>
+
+<form id="allowlist-form">
+  <label for="hosts">Allowed source hosts (comma-separated bare hostnames)</label>
+  <textarea id="hosts" name="hosts" rows="6" cols="60">{{ value }}</textarea>
+  <button type="submit">Save allowlist</button>
+</form>
+<div id="allowlist-output"></div>
+
+<script>
+document.getElementById("allowlist-form").addEventListener("submit", function (event) {
+  event.preventDefault();
+  var output = document.getElementById("allowlist-output");
+  window.pulpOps.postJSON("/ui/api/allowlist", {
+    hosts: document.getElementById("hosts").value
+  }).then(function (body) {
+    if (body.error) {
+      output.textContent = "error=" + body.error;
+      return;
+    }
+    document.getElementById("current").textContent = body.value;
+    document.getElementById("hosts").value = body.value;
+    output.textContent = body.changed
+      ? "saved " + body.count + " host(s)"
+      : "no change (already canonical)";
+  });
+});
+</script>
+{% endblock %}

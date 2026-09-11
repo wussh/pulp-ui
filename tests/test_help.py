@@ -31,7 +31,15 @@ def test_help_page_renders_the_usage_guide(settings):
     assert response.status_code == 200
     body = response.text
     # Each page in the workflow order is documented.
-    for page in ("Overview", "Tenants", "Content", "Tasks", "Validation", "Activity"):
+    for page in (
+        "Overview",
+        "Tenants",
+        "Content",
+        "Tasks",
+        "Validation",
+        "Cluster Secrets",
+        "Activity",
+    ):
         assert page in body
     # The destructive path is documented with its three dependency states.
     assert "/ui/delete" in body
@@ -50,7 +58,7 @@ def test_help_page_absorbs_the_admin_guide(settings):
     # The guide's operational facts survive the merge, in English.
     for section in (
         "Configuring Pulp from this UI",
-        "What still needs a script",
+        "These operations are now in the UI",
         "Sync policy",
         "Maintenance",
     ):
@@ -60,13 +68,29 @@ def test_help_page_absorbs_the_admin_guide(settings):
     assert "25 minutes" in body
     assert "requirements_file" in body
     assert "RustFS" in body
-    # Still-needed scripts are named with their paths.
-    assert "scripts/pulp/pulp-domains-setup.py" in body
-    assert "manifests/pulp/scripts/setup-secrets.sh" in body
-    assert "task/pulp-domains-multitenancy-simulation/" in body
-    # The isolation-check caveat is stated, not glossed over.
-    assert "admin" in body
+    # The formerly script-only operations now name their UI page.
+    assert "Cluster Secrets" in body
+    assert "/ui/secrets" in body
+    assert "tenant_isolation" in body
     assert "non-superuser" in body
+    # The old claim is no longer asserted; it appears only as a quoted falsehood.
+    assert "must not be held by the UI process\" was never true" in body
+    # It is replaced with the honest framing.
+    assert "already held the Pulp admin" in body
+    assert "RBAC scoped to specific Secret names" in body
+    assert "value is ever returned to the browser" in body
+
+
+def test_help_no_longer_claims_these_need_a_script(settings):
+    # The section was rewritten because all three claims became false.
+    with TestClient(build_app(settings)) as client:
+        body = client.get("/ui/help", headers=AUTH_HEADERS).text
+    assert "What still needs a script" not in body
+    assert "no longer a script-only task" in body
+    # The three old script paths are no longer presented as required routes.
+    assert "scripts/pulp/pulp-domains-setup.py" not in body
+    assert "manifests/pulp/scripts/setup-secrets.sh" not in body
+    assert "task/pulp-domains-multitenancy-simulation/" not in body
 
 
 def test_help_page_contains_no_plaintext_credential(settings):

@@ -28,6 +28,10 @@ ALLOWED_SECRET_NAMES = frozenset(
 )
 
 TENANT_CREDENTIALS_SECRET = "pulp-tenant-credentials"
+S3_CREDENTIALS_SECRET = "pulp-s3-credentials"
+POSTGRES_CREDENTIALS_SECRET = "pulp-postgres-credentials"
+# Read from the prod namespace. Exactly one name; see the RBAC file.
+EVEREST_DB_SECRET = "everest-secrets-db-pulp"
 
 
 class SecretError(Exception):
@@ -173,6 +177,12 @@ class SecretsStore:
         if name not in ALLOWED_SECRET_NAMES:
             raise SecretError("secret name is not on the allowlist.")
 
+    @staticmethod
+    def _require_prod_name(name: str) -> None:
+        """The prod read is for exactly one Secret. Anything else is refused."""
+        if name != EVEREST_DB_SECRET:
+            raise SecretError("only the named Everest Postgres Secret may be read.")
+
     async def get_tenant_credential(
         self, domain: str, *, correlation_id: str = ""
     ) -> tuple[str, str] | None:
@@ -207,7 +217,50 @@ class SecretsStore:
             TENANT_CREDENTIALS_SECRET, values, correlation_id=correlation_id
         )
 
+    # -- everest postgres read ---------------------------------------------
 
+    async def read_prod_secret(
+        self, name: str, *, correlation_id: str = ""
+    ) -> dict | None:
+        """Read exactly the named Everest Secret from the prod namespace.
+
+        The name is checked against a single-value allowlist before any request;
+        the prod Role grants `get` on that one resourceName only.
+        """
+        self._require_prod_name(name)
+        namespace = self._settings.k8s_prod_namespace
+        response = await self._client.request(
+            "GET", f"/api/v1/namespaces/{namespace}/secrets/{name}"
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 400:
+            raise SecretError(
+                "Kubernetes API rejected the request.", correlation_id=correlation_id
+            )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise SecretError(
+                "Kubernetes API returned a malformed response.",
+                correlation_id=correlation_id,
+            ) from exc
+
+    async def read_everest_db_credentials(
+        self, *, correlation_id: str = ""
+    ) -> tuple[str, str] | None:
+        """The username/password from the one permitted prod Secret."""
+        payload = await self.read_prod_secret(
+            EVEREST_DB_SECRET, correlation_id=correlation_id
+        )
+        if payload is None:
+            return None
+        values = _decoded_values(payload)
+        username = values.get("user", "")
+        password = values.get("password", "")
+        if not username or not password:
+            return None
+        return username, password
 
 def _decoded_values(payload: dict | None) -> dict[str, str]:
     """base64-decode a Secret's data map. Values never leave this module's callers."""

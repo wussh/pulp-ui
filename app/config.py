@@ -46,6 +46,12 @@ class Settings:
     pulp_s3_bucket_name: str
     pulp_s3_region: str
     pulp_s3_endpoint: str
+    # Non-secret Postgres coordinates from the setup-secrets.sh script; the username
+    # and password are read from the Everest Secret in the prod namespace.
+    pulp_postgres_host: str
+    pulp_postgres_port: str
+    pulp_postgres_db_name: str
+    pulp_postgres_sslmode: str
     # Kubernetes API access for the cluster-secret and tenant-isolation features.
     k8s_api_url: str
     k8s_token_path: str
@@ -100,6 +106,10 @@ def load_settings() -> Settings:
         ),
         pulp_s3_region=_read_secret("PULP_S3_REGION", "PULP_S3_REGION_FILE"),
         pulp_s3_endpoint=_read_secret("PULP_S3_ENDPOINT", "PULP_S3_ENDPOINT_FILE"),
+        pulp_postgres_host=_env("PULP_POSTGRES_HOST", "db-pulp-pgbouncer.prod.svc"),
+        pulp_postgres_port=_env("PULP_POSTGRES_PORT", "5432"),
+        pulp_postgres_db_name=_env("PULP_POSTGRES_DB_NAME", "postgres"),
+        pulp_postgres_sslmode=_env("PULP_POSTGRES_SSLMODE", "prefer"),
         k8s_api_url=_env("K8S_API_URL", default_api_url).rstrip("/"),
         k8s_token_path=token_path,
         k8s_ca_path=_env(

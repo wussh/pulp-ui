@@ -12,6 +12,7 @@ from app.routes import (
     destroy,
     help as help_routes,
     overview,
+    secrets as secrets_routes,
     tasks,
     tenants,
     validation,
@@ -84,6 +85,7 @@ def create_app(
     app.include_router(content.router, prefix="/ui")
     app.include_router(tasks.router, prefix="/ui")
     app.include_router(validation.router, prefix="/ui")
+    app.include_router(secrets_routes.router, prefix="/ui")
     app.include_router(destroy.router, prefix="/ui")
     app.include_router(activity.router, prefix="/ui")
     app.include_router(help_routes.router, prefix="/ui")

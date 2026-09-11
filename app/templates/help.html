@@ -7,8 +7,8 @@
   This console replaces most of the ad-hoc <code>scripts/pulp/*.py</code> workflow.
   It owns no state: <strong>Pulp remains the source of truth for every resource</strong>.
   The activity records it keeps live in memory only and vanish when the pod restarts.
-  A few things still need a script or a direct API call — those are listed honestly
-  under <a href="#scripts">What still needs a script</a>.
+  Every operation the old <code>scripts/pulp/*.py</code> set performed is now available
+  from a page — see <a href="#scripts">These operations are now in the UI</a>.
 </p>
 
 <div class="help-toc">
@@ -17,7 +17,7 @@
   <a href="#example">Worked example</a>
   <a href="#delete">Deleting a resource</a>
   <a href="#consume">Consuming the repositories</a>
-  <a href="#scripts">What still needs a script</a>
+  <a href="#scripts">Operations now in the UI</a>
   <a href="#policy">Sync policy</a>
   <a href="#maintenance">Maintenance</a>
   <a href="#surprises">Things that surprise people</a>
@@ -132,32 +132,44 @@
 
   <h4>Validation</h4>
   <p>
-    Runs the tenant-isolation check against a domain. It reports three assertions, each
-    <code>PASS</code> or <code>FAIL</code> with evidence: <code>domain_isolation</code>,
-    <code>resource_creation</code>, and <code>resource_listing</code>.
+    Runs the tenant-isolation check against a domain. It reports two phases, each
+    assertion <code>PASS</code> or <code>FAIL</code> with evidence.
   </p>
   <p>
-    The check creates a uniquely named test resource, then cross-reads a
-    <strong>different</strong> domain and asserts the created href is absent there. That
-    ordering is deliberate: an isolation assertion that reads before creating can never
-    fail, which is worse than no assertion. It also means a <code>FAIL</code> may leave one
-    disposable resource behind — the response returns a <code>run_id</code>, and
-    <code>POST /ui/api/validation/cleanup</code> with that id deletes only the hrefs that
-    run recorded.
+    <strong>Admin phase.</strong> Authenticated as the Pulp admin, it creates a uniquely
+    named test resource, then cross-reads a <strong>different</strong> domain and asserts
+    the created href is absent there. Assertions: <code>domain_isolation</code>,
+    <code>resource_creation</code>, <code>resource_listing</code>. The ordering is
+    deliberate: an isolation assertion that reads before creating can never fail, which is
+    worse than no assertion.
   </p>
   <p>
-    If the cross-domain search hits its page cap, the assertion reports
+    <strong>Tenant phase.</strong> When a non-superuser credential is stored for the
+    domain, the check runs a second time <em>as that tenant</em> and reports
+    <code>tenant_isolation</code> (the tenant cannot read the other domain's listing) and
+    <code>tenant_own_listing</code> (the tenant can read its own). This is the phase that
+    proves confinement: admin sees every domain, so the admin phase alone only proves a
+    resource is absent from a listing. With no credential stored, the result says so
+    explicitly — it does not pass the admin check off as isolation.
+  </p>
+  <p>
+    A <code>FAIL</code> may leave one disposable resource behind — the response returns a
+    <code>run_id</code>, and <code>POST /ui/api/validation/cleanup</code> with that id
+    deletes only the hrefs that run recorded.
+  </p>
+  <p>
+    If a cross-domain search hits its page cap, the assertion reports
     <code>FAIL</code> with a "truncated" note rather than <code>PASS</code>. A truncated
     search cannot prove isolation.
   </p>
+
+  <h4>Cluster Secrets</h4>
   <p>
-    <strong>Know what this check proves.</strong> It authenticates as the Pulp
-    <em>admin</em>. Admin is a superuser and sees every domain, so the check proves a
-    resource is <em>absent from a listing</em> — it does not prove that a tenant is
-    blocked from another tenant's content. Proving tenant isolation requires
-    authenticating as a real non-superuser tenant; the cross-tenant simulation scripts
-    under <a href="#scripts">What still needs a script</a> do exactly that. Do not read a
-    PASS here as stronger than it is.
+    Applies <code>pulp-s3-credentials</code> and <code>pulp-postgres-credentials</code>
+    from the same sources as the old <code>setup-secrets.sh</code>, and shows which
+    Secrets exist and which keys they carry. Only names and key names are ever displayed.
+    The Postgres username and password are read from <code>everest-secrets-db-pulp</code>
+    in the <code>prod</code> namespace; a missing source Secret is reported, not faked.
   </p>
 
   <h4>Activity</h4>
@@ -251,8 +263,11 @@
     steps. Check what a group already has with the <em>Role assignments</em> lookup.
   </p>
   <p>
-    This flow creates the domain with a <strong>name only</strong>. It cannot set a custom
-    storage backend — see <a href="#scripts">What still needs a script</a>.
+    The domain is created with its <strong>custom S3-backed storage</strong>: the UI sends
+    <code>storage_class</code> and <code>storage_settings</code> from the S3 credential the
+    pod holds. Supply an optional <em>Description</em>, and an optional <em>Bucket
+    override</em> if this tenant needs its own bucket rather than the shared default. The
+    S3 keys are never entered in the browser and never returned.
   </p>
 
   <h4>Add a Python package</h4>
@@ -464,56 +479,60 @@ docker pull pulp.dev.tbs.cloudeka.xyz/v2/default/quay/prometheus/prometheus:late
 </section>
 
 <section id="scripts">
-  <h3>What still needs a script</h3>
+  <h3>These operations are now in the UI</h3>
   <p class="subtitle">
-    These have no UI equivalent. Each is kept out of the UI deliberately — not because the
-    UI is unfinished, but because the operation needs something the UI must not hold.
+    There is no longer a script-only task. Each operation the old script set performed is
+    available on a page, and the credentials behind them are held by the UI process rather
+    than typed into a browser form.
   </p>
   <table>
     <thead>
-      <tr><th>Task</th><th>How</th><th>Why not the UI</th></tr>
+      <tr><th>Task</th><th>Page</th></tr>
     </thead>
     <tbody>
       <tr>
         <td>Create a domain with custom storage</td>
         <td>
-          <code>scripts/pulp/pulp-domains-setup.py</code>
-        </td>
-        <td>
-          A domain's <code>storage_class</code> and <code>storage_settings</code> carry S3
-          access and secret keys. The UI's tenant flow creates the domain by name only,
-          because those credentials must not be typed into a browser form or held by the
-          UI process. Use the script, or the same body against
-          <code>POST /pulp/default/api/v3/domains/</code> directly.
+          <strong>Tenants</strong> → <em>Guided tenant setup</em>. The domain is created
+          with its <code>storage_class</code> and <code>storage_settings</code> from the
+          S3 credential the pod holds. You supply the domain name, an optional
+          description, and an optional bucket override; the S3 keys are never entered in
+          the browser and never returned.
         </td>
       </tr>
       <tr>
         <td>Apply the S3 and Postgres Secrets to the cluster</td>
-        <td><code>manifests/pulp/scripts/setup-secrets.sh</code></td>
         <td>
-          This writes Kubernetes Secrets (<code>pulp-s3-credentials</code>,
-          <code>pulp-postgres-credentials</code>) from cluster and Everest sources. It runs
-          against the cluster with kubectl, not against the Pulp API, so it is outside this
-          UI's surface entirely. Keeping credentials out of web forms is the point.
+          <strong>Cluster Secrets</strong> (<code>/ui/secrets</code>). Applies
+          <code>pulp-s3-credentials</code> and <code>pulp-postgres-credentials</code> from
+          the same sources the old shell script used, and shows which Secrets exist and
+          which keys they carry. No value is ever displayed.
         </td>
       </tr>
       <tr>
         <td>Prove cross-tenant isolation with real tenant credentials</td>
-        <td><code>task/pulp-domains-multitenancy-simulation/</code></td>
         <td>
-          The UI's Validation check runs as the Pulp admin, who sees every domain. The
-          simulation's <code>inventory.sh</code>, <code>simulate-repositories.sh</code>, and
-          <code>cleanup-repositories.sh</code> authenticate as non-superuser tenant users,
-          which is the only way to show a tenant is actually confined. This is a stronger
-          claim than the UI check makes, and the UI deliberately does not pretend otherwise.
+          <strong>Tenants</strong> → <em>Tenant credential</em> stores a non-superuser
+          credential for a domain; <strong>Validation</strong> then runs a second phase
+          authenticated as that tenant, asserting it cannot read another domain's listing
+          and can read its own. The assertions are named <code>tenant_isolation</code> and
+          <code>tenant_own_listing</code>. With no credential stored, the result says so
+          and does not pass the admin check off as isolation.
         </td>
       </tr>
     </tbody>
   </table>
   <p class="subtitle">
+    <strong>Honest framing on credentials.</strong> This UI already held the Pulp admin
+    credential, so "credentials must not be held by the UI process" was never true. It now
+    holds more of them. They are guarded by RBAC scoped to specific Secret names — a strict
+    allowlist in the application refuses any other name before a request is made — and no
+    value is ever returned to the browser, logged, or written to an activity record.
+  </p>
+  <p class="subtitle">
     Everything else the old script set did — creating and syncing repositories, publishing,
     linking, adding registries, editing Python includes and Ansible collections, creating
-    domains by name, and assigning tenant roles — is now done from the pages above.
+    domains, and assigning tenant roles — is also done from the pages above.
   </p>
 </section>
 
@@ -641,9 +660,11 @@ with urllib.request.urlopen(urllib.request.Request(
       merge preserves whatever else is in the file. Never blank that field to "start clean".
     </li>
     <li>
-      <strong>Validation passing is weaker than it looks.</strong> It runs as the admin
-      superuser, so it proves absence from a listing, not tenant confinement. Real
-      isolation proof needs the tenant-credential simulation scripts.
+      <strong>Validation's admin phase is weaker than the tenant phase.</strong> The
+      <code>domain_isolation</code> assertion runs as the admin superuser, so it proves
+      absence from a listing, not tenant confinement. Store a tenant credential on
+      <strong>Tenants</strong> and the <code>tenant_isolation</code> assertion supplies the
+      stronger proof. Without one, the result says isolation was not verified as a tenant.
     </li>
   </ul>
 </section>

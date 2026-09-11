@@ -8,6 +8,7 @@
 {% if error %}<p class="warning">{{ error }}</p>{% endif %}
 {% for plugin, data in plugins.items() %}
   <h3>{{ plugin }}</h3>
+  {% if data.error %}<p class="warning">Plugin {{ plugin }} failed: {{ data.error }}</p>{% endif %}
   <h4>Repositories</h4>
   <ul>{% for repo in data.repositories %}<li>{{ repo.name }} — {{ repo.pulp_href }}</li>{% endfor %}</ul>
   <h4>Distributions</h4>

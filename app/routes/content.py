@@ -2,7 +2,14 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from app.endpoints import CONTENT_PLUGINS, plugin_api, validate_name, validate_plugin
+from app.endpoints import (
+    CONTENT_PLUGINS,
+    plugin_api,
+    plugin_resource_path,
+    requires_base_path,
+    validate_name,
+    validate_plugin,
+)
 from app.pulp import PulpError
 from app.safety import validate_source_url
 
@@ -14,32 +21,43 @@ def _record_id(href: str) -> str:
     return href.rstrip("/").split("/")[-1]
 
 
+def _listing(response: dict) -> list[dict]:
+    return [
+        {"name": item.get("name"), "pulp_href": item.get("pulp_href")}
+        for item in response.get("results", [])
+    ]
+
+
 async def list_content(client, domain: str) -> dict:
     domain = validate_name("domain", domain)
     out: dict[str, dict] = {}
+    loaded = 0
     for plugin in CONTENT_PLUGINS:
-        repos = await client.request(
-            "GET", plugin_api(domain, f"repositories/{plugin}/{plugin}/")
-        )
-        dists = await client.request(
-            "GET", plugin_api(domain, f"distributions/{plugin}/{plugin}/")
-        )
-        out[plugin] = {
-            "repositories": [
-                {"name": item.get("name"), "pulp_href": item.get("pulp_href")}
-                for item in repos.get("results", [])
-            ],
-            "distributions": [
-                {"name": item.get("name"), "pulp_href": item.get("pulp_href")}
-                for item in dists.get("results", [])
-            ],
-        }
+        entry: dict = {"repositories": [], "distributions": [], "error": ""}
+        errors: list[str] = []
+        for kind, key in (("repository", "repositories"), ("distribution", "distributions")):
+            try:
+                response = await client.request(
+                    "GET", plugin_api(domain, plugin_resource_path(plugin, kind))
+                )
+            except PulpError as exc:
+                # A single broken plugin endpoint must not fail the whole page.
+                errors.append(f"{key}: {exc.safe_message}")
+                continue
+            entry[key] = _listing(response)
+        if errors:
+            entry["error"] = "; ".join(errors)
+        else:
+            loaded += 1
+        out[plugin] = entry
+    if loaded == 0:
+        raise PulpError("every content plugin endpoint failed")
     return {"domain": domain, "plugins": out}
 
 
 def _require_repository_href(domain: str, plugin: str, href: str) -> str:
     href = str(href or "")
-    expected_prefix = plugin_api(domain, f"repositories/{plugin}/{plugin}/")
+    expected_prefix = plugin_api(domain, plugin_resource_path(plugin, "repository"))
     if not href.startswith(expected_prefix):
         raise ValueError("repository href is not valid for this domain and plugin")
     if href.rstrip("/") == expected_prefix.rstrip("/"):
@@ -53,7 +71,7 @@ async def create_repository(client, payload: dict, correlation_id: str) -> dict:
     name = validate_name("repository", payload.get("name", ""))
     return await client.request(
         "POST",
-        plugin_api(domain, f"repositories/{plugin}/{plugin}/"),
+        plugin_api(domain, plugin_resource_path(plugin, "repository")),
         json_body={"name": name},
         correlation_id=correlation_id,
     )
@@ -67,7 +85,7 @@ async def create_distribution(client, payload: dict, correlation_id: str) -> dic
         domain, plugin, payload.get("repository_href", "")
     )
     body: dict = {"name": name, "repository": repository_href}
-    if plugin == "container":
+    if requires_base_path(plugin):
         raw_base_path = payload.get("base_path")
         if raw_base_path is not None and not isinstance(raw_base_path, str):
             raise ValueError("base_path must be a string")
@@ -77,7 +95,7 @@ async def create_distribution(client, payload: dict, correlation_id: str) -> dic
         body["base_path"] = base_path
     return await client.request(
         "POST",
-        plugin_api(domain, f"distributions/{plugin}/{plugin}/"),
+        plugin_api(domain, plugin_resource_path(plugin, "distribution")),
         json_body=body,
         correlation_id=correlation_id,
     )
@@ -97,7 +115,7 @@ async def start_sync(client, payload: dict, correlation_id: str, settings) -> di
     remote_name = validate_name("remote", f"sync-{correlation_id}")
     remote = await client.request(
         "POST",
-        plugin_api(domain, f"remotes/{plugin}/{plugin}/"),
+        plugin_api(domain, plugin_resource_path(plugin, "remote")),
         json_body={"name": remote_name, "url": remote_url},
         correlation_id=correlation_id,
     )
@@ -105,7 +123,7 @@ async def start_sync(client, payload: dict, correlation_id: str, settings) -> di
     try:
         result = await client.request(
             "POST",
-            plugin_api(domain, f"repositories/{plugin}/{plugin}/")
+            plugin_api(domain, plugin_resource_path(plugin, "repository"))
             + f"{_record_id(repository_href)}/sync/",
             json_body={"remote": remote_href},
             correlation_id=correlation_id,

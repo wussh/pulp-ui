@@ -4,12 +4,31 @@ import pytest
 from app.main import create_app
 from tests.helpers import authed_client, csrf_headers, make_client
 
+# LITERAL endpoint segments verified live against tbs-dev Pulp. The per-kind
+# segments differ: deb uses `apt`, python distributions use `pypi`, and ansible
+# remotes use `collection`. These strings must not be derived from production code.
 REPO_PATHS = {
     "rpm": "/pulp/default/api/v3/repositories/rpm/rpm/",
-    "deb": "/pulp/default/api/v3/repositories/deb/deb/",
+    "deb": "/pulp/default/api/v3/repositories/deb/apt/",
     "python": "/pulp/default/api/v3/repositories/python/python/",
     "ansible": "/pulp/default/api/v3/repositories/ansible/ansible/",
     "container": "/pulp/default/api/v3/repositories/container/container/",
+}
+
+REMOTE_PATHS = {
+    "rpm": "/pulp/default/api/v3/remotes/rpm/rpm/",
+    "deb": "/pulp/default/api/v3/remotes/deb/apt/",
+    "python": "/pulp/default/api/v3/remotes/python/python/",
+    "ansible": "/pulp/default/api/v3/remotes/ansible/collection/",
+    "container": "/pulp/default/api/v3/remotes/container/container/",
+}
+
+DISTRIBUTION_PATHS = {
+    "rpm": "/pulp/default/api/v3/distributions/rpm/rpm/",
+    "deb": "/pulp/default/api/v3/distributions/deb/apt/",
+    "python": "/pulp/default/api/v3/distributions/python/pypi/",
+    "ansible": "/pulp/default/api/v3/distributions/ansible/ansible/",
+    "container": "/pulp/default/api/v3/distributions/container/container/",
 }
 
 
@@ -30,6 +49,90 @@ def test_create_repository_uses_plugin_scoped_endpoint(settings, plugin, path):
         )
     assert response.status_code == 200
     assert seen["path"] == path
+
+
+@pytest.mark.parametrize("plugin,path", list(DISTRIBUTION_PATHS.items()))
+def test_create_distribution_uses_plugin_scoped_endpoint(settings, plugin, path):
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        return httpx.Response(201, json={"pulp_href": path + "abc/"})
+
+    payload = {
+        "domain": "default",
+        "plugin": plugin,
+        "name": "demo-dist",
+        "repository_href": REPO_PATHS[plugin] + "abc/",
+    }
+    if plugin == "container":
+        payload["base_path"] = "demo"
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/distribution",
+            headers=csrf_headers(test_client),
+            json=payload,
+        )
+    assert response.status_code == 200
+    assert seen["path"] == path
+
+
+@pytest.mark.parametrize("plugin,path", list(REMOTE_PATHS.items()))
+def test_sync_uses_plugin_scoped_endpoints(settings, plugin, path):
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if "/remotes/" in request.url.path:
+            return httpx.Response(201, json={"pulp_href": path + "r1/"})
+        return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/xyz/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/sync",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "plugin": plugin,
+                "repository_href": REPO_PATHS[plugin] + "abc/",
+                "remote_url": "https://mirror.example.com/pub/rpm/",
+            },
+        )
+    assert response.status_code == 200
+    assert seen[0] == path
+    assert seen[1] == REPO_PATHS[plugin] + "abc/sync/"
+
+
+def test_deb_repository_href_uses_apt_segment(settings):
+    from app.routes.content import _require_repository_href
+
+    href = REPO_PATHS["deb"] + "abc/"
+    assert _require_repository_href("default", "deb", href) == href
+
+
+def test_python_distribution_does_not_require_base_path(settings):
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        return httpx.Response(201, json={"pulp_href": DISTRIBUTION_PATHS["python"] + "1/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/distribution",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "plugin": "python",
+                "name": "demo",
+                "repository_href": REPO_PATHS["python"] + "abc/",
+            },
+        )
+    assert response.status_code == 200
+    assert seen["path"] == DISTRIBUTION_PATHS["python"]
 
 
 def test_create_repository_rejects_unknown_plugin(settings):
@@ -115,6 +218,50 @@ def test_content_listing_covers_every_plugin(settings):
     with authed_client(app) as test_client:
         body = test_client.get("/ui/api/content?domain=default").json()
     assert set(body["plugins"]) == {"rpm", "deb", "python", "ansible", "container"}
+    assert all(
+        plugin_data.get("error") in (None, "") for plugin_data in body["plugins"].values()
+    )
+
+
+def test_content_listing_isolates_single_plugin_failure(settings):
+    # Every deb endpoint 404s. The other four plugins must still load and the response
+    # must stay 200 with an error entry naming the failed plugin. Matching on the deb
+    # prefix (not one exact path) keeps this a real regression guard: the pre-fix code
+    # requested deb/deb, which also 404s here, and had no isolation so it 502'd.
+    def handler(request):
+        if "/repositories/deb/" in request.url.path:
+            return httpx.Response(404, json={"detail": "Not found."})
+        return httpx.Response(
+            200,
+            json={
+                "count": 1,
+                "results": [{"name": "r1", "pulp_href": request.url.path + "1/"}],
+            },
+        )
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.get("/ui/api/content?domain=default")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["plugins"]["deb"]["error"]
+    assert body["plugins"]["deb"]["repositories"] == []
+    assert body["plugins"]["rpm"]["repositories"] == [
+        {
+            "name": "r1",
+            "pulp_href": "/pulp/default/api/v3/repositories/rpm/rpm/1/",
+        }
+    ]
+
+
+def test_content_listing_fails_only_when_every_plugin_fails(settings):
+    def handler(request):
+        return httpx.Response(500, json={})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.get("/ui/api/content?domain=default")
+    assert response.status_code == 502
 
 
 @pytest.mark.parametrize(

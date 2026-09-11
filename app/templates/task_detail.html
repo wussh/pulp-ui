@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Task detail</h2>
+{% if error %}<p class="warning">{{ error }}</p>{% endif %}
+<dl class="facts">
+  <dt>Href</dt><dd>{{ task.pulp_href }}</dd>
+  <dt>State</dt><dd id="task-state">{{ task.state }}</dd>
+</dl>
+{% if task.error %}
+<p class="warning">{{ task.error.code }}: {{ task.error.description }}</p>
+{% endif %}
+<h3>Progress</h3>
+<ol id="task-progress">
+  {% for report in task.progress_reports %}<li>{{ report.code }} — {{ report.message }}</li>{% endfor %}
+</ol>
+<h3>Created resources</h3>
+<ul>{% for resource in task.created_resources %}<li>{{ resource }}</li>{% endfor %}</ul>
+<script>
+window.pulpOps.pollTask("{{ task.pulp_href }}", function (body) {
+  if (body.state) {
+    document.getElementById("task-state").textContent = body.state;
+  }
+});
+</script>
+{% endblock %}

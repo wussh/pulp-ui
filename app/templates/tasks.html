@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Tasks</h2>
+<form method="get" action="/ui/tasks">
+  <label>Domain <input name="domain" value="{{ domain }}"></label>
+  <label>State
+    <select name="state">
+      <option value="">any</option>
+      {% for option in ["running", "waiting", "completed", "failed", "canceled", "skipped"] %}
+      <option value="{{ option }}" {% if option == state %}selected{% endif %}>{{ option }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">Filter</button>
+</form>
+{% if error %}<p class="warning">{{ error }}</p>{% endif %}
+<table>
+  <thead><tr><th>State</th><th>Name</th><th>Created</th><th>Detail</th></tr></thead>
+  <tbody>
+  {% for task in tasks %}
+    <tr>
+      <td>{{ task.state }}</td>
+      <td>{{ task.name }}</td>
+      <td>{{ task.created }}</td>
+      <td><a href="/ui/tasks/detail?domain={{ domain }}&amp;href={{ task.pulp_href }}">open</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

@@ -830,8 +830,12 @@ def test_python_includes_merge_patches_and_syncs(settings):
     def handler(request):
         seen.append((request.method, request.url.path, json.loads(request.content or b"{}")))
         if request.method == "GET":
+            # Pulp returns `includes` as plain strings, not dicts. Verified live:
+            # the real remote answers ["pyyaml"], and a dict-shaped PATCH is rejected
+            # with {"0": ["Not a valid string."]}. The old fixture invented dicts,
+            # which is why this shipped broken.
             return httpx.Response(
-                200, json={"pulp_href": PYTHON_REMOTE, "includes": [{"name": "requests"}]}
+                200, json={"pulp_href": PYTHON_REMOTE, "includes": ["requests"]}
             )
         if request.method == "PATCH":
             return httpx.Response(200, json={"pulp_href": PYTHON_REMOTE})
@@ -856,7 +860,8 @@ def test_python_includes_merge_patches_and_syncs(settings):
     assert body["task_href"] == "/pulp/default/api/v3/tasks/sync-1/"
     patch = [call for call in seen if call[0] == "PATCH"][0]
     assert patch[1] == PYTHON_REMOTE
-    assert patch[2] == {"includes": [{"name": "boto3"}, {"name": "requests"}]}
+    # Plain strings — this is the only shape Pulp accepts for `includes`.
+    assert patch[2] == {"includes": ["boto3", "requests"]}
     assert seen[-1][1] == PYTHON_REPO + "sync/"
 
 

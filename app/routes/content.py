@@ -119,11 +119,16 @@ async def update_python_includes(client, payload: dict, correlation_id: str) -> 
     if not names:
         raise ValueError("at least one package name is required")
     remote = await client.request("GET", remote_href, correlation_id=correlation_id)
-    current = {
-        str(item.get("name"))
-        for item in remote.get("includes") or []
-        if isinstance(item, dict) and item.get("name")
-    }
+    # Pulp's `includes` is an array of PLAIN STRINGS (verified live: the remote
+    # returns ["pyyaml"], and a PATCH of [{"name": ...}] is rejected with
+    # `{"0": ["Not a valid string."]}`). Accept a dict-shaped entry too, so a
+    # remote written by some other tool is parsed rather than silently seen as empty.
+    current: set[str] = set()
+    for item in remote.get("includes") or []:
+        if isinstance(item, str) and item:
+            current.add(item)
+        elif isinstance(item, dict) and item.get("name"):
+            current.add(str(item["name"]))
     merged = sorted(current | names)
     if merged == sorted(current):
         # Nothing to add: do not issue an empty sync (it would re-walk the upstream).
@@ -131,7 +136,7 @@ async def update_python_includes(client, payload: dict, correlation_id: str) -> 
     await client.request(
         "PATCH",
         remote_href,
-        json_body={"includes": [{"name": name} for name in merged]},
+        json_body={"includes": merged},
         correlation_id=correlation_id,
     )
     result = await _sync_repository(

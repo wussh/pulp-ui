@@ -15,6 +15,35 @@
   <ul>{% for dist in data.distributions %}<li>{{ dist.name }} — {{ dist.pulp_href }}</li>{% endfor %}</ul>
 {% endfor %}
 
+<h3>Container pull-through registries</h3>
+{% if pull_through_error %}<p class="warning">{{ pull_through_error }}</p>{% endif %}
+<table>
+  <thead>
+    <tr><th>Name</th><th>Base path</th><th>Upstream</th><th>URL</th><th>Note</th></tr>
+  </thead>
+  <tbody>
+    {% for row in pull_through %}
+    <tr>
+      <td>{{ row.name }}</td>
+      <td>{{ row.base_path }}</td>
+      <td>{{ row.upstream_name }}</td>
+      <td>{{ row.upstream_url }}</td>
+      <td>{% if row.note %}<span class="warning">{{ row.note }}</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h3>Add pull-through registry</h3>
+<form id="pull-through-form">
+  <label>Domain <input name="domain" value="{{ domain }}" required></label>
+  <label>Name <input name="name" required></label>
+  <label>Base path <input name="base_path" required></label>
+  <label>Upstream URL <input name="upstream_url" required></label>
+  <button type="submit">Add</button>
+</form>
+<div id="pull-through-output"></div>
+
 <h3>Create repository</h3>
 <form id="repo-form">
   <label>Domain <input name="domain" value="{{ domain }}" required></label>
@@ -123,5 +152,8 @@ bindContentForm(
 bindContentForm("sync-form", "sync-output", "/ui/api/content/sync", followTask);
 bindContentForm("publish-form", "publish-output", "/ui/api/content/publish", followTask);
 bindContentForm("link-form", "link-output", "/ui/api/content/link", followTask);
+bindContentForm(
+  "pull-through-form", "pull-through-output", "/ui/api/content/pull-through", followTask
+);
 </script>
 {% endblock %}

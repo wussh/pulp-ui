@@ -560,3 +560,215 @@ def test_link_rejects_publication_from_other_domain(settings):
         )
     assert response.status_code == 400
     assert calls == []
+
+
+# --- Feature 2: container pull-through ----------------------------------------
+
+PULL_THROUGH_BASE = "/pulp/default/api/v3"
+
+
+def _pull_through_handler(remotes, repos, dists):
+    def handler(request):
+        path = request.url.path
+        if path == PULL_THROUGH_BASE + "/remotes/container/pull-through/":
+            return httpx.Response(200, json={"count": len(remotes), "results": remotes})
+        if path == PULL_THROUGH_BASE + "/repositories/container/pull-through/":
+            return httpx.Response(200, json={"count": len(repos), "results": repos})
+        if path == PULL_THROUGH_BASE + "/distributions/container/pull-through/":
+            return httpx.Response(200, json={"count": len(dists), "results": dists})
+        return httpx.Response(404, json={"detail": "Not found."})
+
+    return handler
+
+
+def test_pull_through_status_joins_distribution_to_remote(settings):
+    remotes = [
+        {
+            "name": "ghcr",
+            "pulp_href": "/pulp/default/api/v3/remotes/container/pull-through/r1/",
+            "url": "https://ghcr.io",
+            "upstream_name": "ghcr",
+        }
+    ]
+    repos = [
+        {
+            "name": "ghcr",
+            "pulp_href": "/pulp/default/api/v3/repositories/container/pull-through/p1/",
+            "remote": remotes[0]["pulp_href"],
+        }
+    ]
+    dists = [
+        {
+            "name": "ghcr",
+            "pulp_href": "/pulp/default/api/v3/distributions/container/pull-through/d1/",
+            "base_path": "ghcr",
+            "repository": repos[0]["pulp_href"],
+        }
+    ]
+
+    app = create_app(
+        settings,
+        client_factory=lambda: make_client(
+            settings, _pull_through_handler(remotes, repos, dists)
+        ),
+    )
+    with authed_client(app) as test_client:
+        response = test_client.get("/ui/api/container/status?domain=default")
+    assert response.status_code == 200
+    assert response.json()["rows"] == [
+        {
+            "name": "ghcr",
+            "base_path": "ghcr",
+            "upstream_name": "ghcr",
+            "upstream_url": "https://ghcr.io",
+            "distribution_href": dists[0]["pulp_href"],
+            "note": "",
+        }
+    ]
+
+
+def test_pull_through_status_reports_distribution_without_repository(settings):
+    dists = [
+        {
+            "name": "orphan",
+            "pulp_href": "/pulp/default/api/v3/distributions/container/pull-through/d1/",
+            "base_path": "orphan",
+            "repository": None,
+        }
+    ]
+    app = create_app(
+        settings,
+        client_factory=lambda: make_client(
+            settings, _pull_through_handler([], [], dists)
+        ),
+    )
+    with authed_client(app) as test_client:
+        rows = test_client.get("/ui/api/container/status?domain=default").json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["name"] == "orphan"
+    assert rows[0]["note"]
+
+
+def test_pull_through_status_reports_unresolvable_remote(settings):
+    repos = [
+        {
+            "name": "ghcr",
+            "pulp_href": "/pulp/default/api/v3/repositories/container/pull-through/p1/",
+            "remote": "/pulp/default/api/v3/remotes/container/pull-through/gone/",
+        }
+    ]
+    dists = [
+        {
+            "name": "ghcr",
+            "pulp_href": "/pulp/default/api/v3/distributions/container/pull-through/d1/",
+            "base_path": "ghcr",
+            "repository": repos[0]["pulp_href"],
+        }
+    ]
+    app = create_app(
+        settings,
+        client_factory=lambda: make_client(
+            settings, _pull_through_handler([], repos, dists)
+        ),
+    )
+    with authed_client(app) as test_client:
+        rows = test_client.get("/ui/api/container/status?domain=default").json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["note"]
+    assert rows[0]["upstream_url"] == ""
+
+
+def test_pull_through_add_creates_remote_repo_distribution_in_order(settings):
+    import json
+
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, json.loads(request.content or b"{}")))
+        if "/distributions/" in request.url.path:
+            return httpx.Response(202, json={"task": "/pulp/default/api/v3/tasks/d1/"})
+        return httpx.Response(201, json={"pulp_href": request.url.path + "1/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/pull-through",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "name": "ghcr",
+                "base_path": "ghcr",
+                "upstream_url": "https://mirror.example.com",
+            },
+        )
+    assert response.status_code == 200
+    assert [call[1] for call in seen] == [
+        PULL_THROUGH_BASE + "/remotes/container/pull-through/",
+        PULL_THROUGH_BASE + "/repositories/container/pull-through/",
+        PULL_THROUGH_BASE + "/distributions/container/pull-through/",
+    ]
+    assert seen[2][2]["repository"] == (
+        PULL_THROUGH_BASE + "/repositories/container/pull-through/1/"
+    )
+    assert response.json()["task_href"] == "/pulp/default/api/v3/tasks/d1/"
+
+
+def test_pull_through_add_stops_on_first_failure(settings):
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if "/repositories/" in request.url.path:
+            return httpx.Response(400, json={"name": ["This field must be unique."]})
+        return httpx.Response(201, json={"pulp_href": request.url.path + "1/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/pull-through",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "name": "ghcr",
+                "base_path": "ghcr",
+                "upstream_url": "https://mirror.example.com",
+            },
+        )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["failed"] is True
+    assert body["completed"][0]["resource"] == "remote"
+    assert seen == [
+        PULL_THROUGH_BASE + "/remotes/container/pull-through/",
+        PULL_THROUGH_BASE + "/repositories/container/pull-through/",
+    ]
+
+
+def test_pull_through_add_rejects_non_allowlisted_upstream(settings):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(201, json={"pulp_href": "x"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/content/pull-through",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "name": "ghcr",
+                "base_path": "ghcr",
+                "upstream_url": "https://evil.example.org",
+            },
+        )
+    assert response.status_code == 400
+    assert calls == []
+
+
+def test_pull_through_status_records_no_new_routes_under_container_container(settings):
+    # The regular container/container mapping must remain untouched.
+    from app.endpoints import resource_segment
+
+    assert resource_segment("container", "repository") == "container/container"

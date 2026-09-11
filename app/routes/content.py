@@ -8,6 +8,7 @@ from app.endpoints import (
     plugin_api,
     plugin_resource_path,
     publication_path,
+    pull_through_path,
     requires_base_path,
     validate_name,
     validate_plugin,
@@ -17,6 +18,8 @@ from app.safety import validate_source_url
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+
+_CONTAINER = "container"
 
 
 def _record_id(href: str) -> str:
@@ -134,6 +137,130 @@ async def link_publication(client, payload: dict, correlation_id: str) -> dict:
         correlation_id=correlation_id,
     )
     return {"task_href": result.get("task", "")}
+
+
+def _pull_through_rows(remotes: list, repos: list, dists: list) -> list[dict]:
+    by_href = {item.get("pulp_href"): item for item in repos}
+    remote_by_href = {item.get("pulp_href"): item for item in remotes}
+    rows: list[dict] = []
+    for dist in dists:
+        repo = by_href.get(dist.get("repository"))
+        if repo is None:
+            # Report the broken link instead of dropping the distribution: a silent
+            # omission hides a registry an operator may be relying on.
+            rows.append(
+                {
+                    "name": dist.get("name"),
+                    "base_path": dist.get("base_path"),
+                    "upstream_name": "",
+                    "upstream_url": "",
+                    "distribution_href": dist.get("pulp_href"),
+                    "note": "distribution is not linked to a pull-through repository",
+                }
+            )
+            continue
+        remote = remote_by_href.get(repo.get("remote"))
+        if remote is None:
+            rows.append(
+                {
+                    "name": dist.get("name"),
+                    "base_path": dist.get("base_path"),
+                    "upstream_name": "",
+                    "upstream_url": "",
+                    "distribution_href": dist.get("pulp_href"),
+                    "note": "repository has no resolvable pull-through remote",
+                }
+            )
+            continue
+        rows.append(
+            {
+                "name": dist.get("name"),
+                "base_path": dist.get("base_path"),
+                "upstream_name": remote.get("upstream_name"),
+                "upstream_url": remote.get("url"),
+                "distribution_href": dist.get("pulp_href"),
+                "note": "",
+            }
+        )
+    return rows
+
+
+async def list_pull_through(client, domain: str) -> dict:
+    domain = validate_name("domain", domain)
+    fetched: list[list] = []
+    for kind in ("remote", "repository", "distribution"):
+        response = await client.request(
+            "GET", plugin_api(domain, pull_through_path(kind))
+        )
+        fetched.append(response.get("results", []))
+    remotes, repos, dists = fetched
+    return {"domain": domain, "rows": _pull_through_rows(remotes, repos, dists)}
+
+
+async def add_pull_through_registry(
+    client, payload: dict, correlation_id: str, settings
+) -> dict:
+    domain = validate_name("domain", payload.get("domain", ""))
+    name = validate_name("registry", payload.get("name", ""))
+    raw_base_path = payload.get("base_path")
+    if not isinstance(raw_base_path, str):
+        raise ValueError("base_path must be a string")
+    base_path = raw_base_path.strip().strip("/")
+    if not base_path:
+        raise ValueError("base_path is required")
+    # Reuse the shared SSRF guard rather than re-implementing host checks.
+    upstream_url = validate_source_url(
+        str(payload.get("upstream_url") or ""), settings.allowed_source_hosts
+    )
+    completed: list[dict] = []
+    remote: dict = {}
+    repo: dict = {}
+    try:
+        remote = await client.request(
+            "POST",
+            plugin_api(domain, pull_through_path("remote")),
+            json_body={"name": name, "url": upstream_url},
+            correlation_id=correlation_id,
+        )
+        completed.append({"resource": "remote", "pulp_href": remote.get("pulp_href", "")})
+        repo = await client.request(
+            "POST",
+            plugin_api(domain, pull_through_path("repository")),
+            json_body={"name": name, "remote": remote.get("pulp_href", "")},
+            correlation_id=correlation_id,
+        )
+        completed.append({"resource": "repository", "pulp_href": repo.get("pulp_href", "")})
+        dist = await client.request(
+            "POST",
+            plugin_api(domain, pull_through_path("distribution")),
+            json_body={
+                "name": name,
+                "base_path": base_path,
+                "repository": repo.get("pulp_href", ""),
+            },
+            correlation_id=correlation_id,
+        )
+        completed.append(
+            {
+                "resource": "distribution",
+                "pulp_href": dist.get("pulp_href", ""),
+                "task_href": dist.get("task", ""),
+            }
+        )
+    except PulpError as exc:
+        return {
+            "correlation_id": correlation_id,
+            "completed": completed,
+            "stopped_at": {"resource": "pull-through registry", "name": name},
+            "message": exc.safe_message,
+            "failed": True,
+        }
+    return {
+        "correlation_id": correlation_id,
+        "completed": completed,
+        "task_href": completed[-1].get("task_href", ""),
+        "failed": False,
+    }
 
 
 async def create_repository(client, payload: dict, correlation_id: str) -> dict:
@@ -276,6 +403,14 @@ async def content_page(request: Request) -> HTMLResponse:
             },
             status_code=502,
         )
+    # The pull-through view is a separate read; its failure must not take down the
+    # content page, matching the per-plugin isolation in list_content.
+    pull_through: list[dict] = []
+    pull_through_error = ""
+    try:
+        pull_through = (await list_pull_through(client, domain))["rows"]
+    except (ValueError, PulpError) as exc:
+        pull_through_error = exc.safe_message if isinstance(exc, PulpError) else str(exc)
     await client.aclose()
     return templates.TemplateResponse(
         request,
@@ -284,6 +419,8 @@ async def content_page(request: Request) -> HTMLResponse:
             **data,
             "plugin_choices": choices,
             "publish_plugin_choices": publish_choices,
+            "pull_through": pull_through,
+            "pull_through_error": pull_through_error,
             "warnings": [],
             "current_user": "operator",
         },
@@ -350,6 +487,48 @@ async def distribution_create(
             "pulp_href": created.get("pulp_href", ""),
             "task_href": created.get("task", ""),
         }
+
+    return await _guarded(request, handler)
+
+
+@router.get("/api/container/status")
+@router.get("/api/content/pull-through")
+async def pull_through_status(request: Request) -> JSONResponse:
+    client = request.app.state.client_factory()
+    try:
+        body = await list_pull_through(
+            client, request.query_params.get("domain", "default")
+        )
+    except ValueError as exc:
+        await client.aclose()
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except PulpError as exc:
+        await client.aclose()
+        return JSONResponse(
+            {"error": exc.safe_message, "correlation_id": exc.correlation_id},
+            status_code=exc.status_code or 502,
+        )
+    await client.aclose()
+    return JSONResponse(body)
+
+
+@router.post("/api/content/pull-through")
+async def pull_through_add(request: Request, payload: dict = Body(...)) -> JSONResponse:
+    async def handler(client, correlation_id):
+        result = await add_pull_through_registry(
+            client, payload, correlation_id, request.app.state.settings
+        )
+        request.app.state.activity.record(
+            {
+                "correlation_id": correlation_id,
+                "operator": getattr(request.state, "username", None) or "operator",
+                "action": "content.pull_through.add",
+                "target": payload.get("name", ""),
+                "target_type": "distribution",
+                "result": "failed" if result.get("failed") else "completed",
+            }
+        )
+        return result
 
     return await _guarded(request, handler)
 

@@ -73,7 +73,10 @@ async def preview_target(client, domain: str, href: str) -> dict:
     }
     if _resource_type(href) == "repositories":
         try:
-            names = await _referencing_distributions(client, domain, href)
+            # Match on the canonical href Pulp returned, not the raw input: a distribution's
+            # `repository` field is always canonical, so comparing against a non-canonical
+            # operator string would silently find nothing and report "no dependencies".
+            names = await _referencing_distributions(client, domain, body["href"])
         except PulpError as exc:
             return {**body, "dependency_error": exc.safe_message}
         return {**body, "dependencies": ", ".join(names)}
@@ -86,7 +89,9 @@ def _validated_href(domain: str, href: str) -> str:
         raise ValueError("href is not valid for this domain")
     if href.rstrip("/") == prefix.rstrip("/"):
         raise ValueError("href must identify a specific resource")
-    # href shape: pulp/<domain>/api/v3/<type>/<plugin>/<plugin>/<id>/
+    # href shape: pulp/<domain>/api/v3/<type>/<plugin>/<resource-segment>/<id>/
+    # The trailing segment is NOT always the plugin name: deb is "deb/apt", a python
+    # distribution is "python/pypi", and an ansible remote is "ansible/collection".
     # Require the full plugin-scoped record shape so a collection-level or
     # global-endpoint path can never reach DELETE.
     parts = [part for part in href.split("/") if part]

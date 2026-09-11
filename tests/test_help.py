@@ -37,6 +37,10 @@ def test_help_page_renders_the_usage_guide(settings):
     assert "/ui/delete" in body
     assert "No dependencies recorded" in body
     assert "Dependency check could not complete" in body
+    # Every consumable content type has a client command.
+    for client in ("dnf", "apt", "pip", "ansible-galaxy", "docker pull"):
+        assert client in body
+    assert "/v2/default/" in body
 
 
 def test_help_link_is_in_the_navigation(settings):

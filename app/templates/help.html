@@ -13,8 +13,7 @@
   <a href="#pages">Pages</a>
   <a href="#example">Worked example</a>
   <a href="#delete">Deleting a resource</a>
-  <a href="#commands">Commands</a>
-  <a href="#flows">Flows</a>
+  <a href="#consume">Consuming the repositories</a>
   <a href="#surprises">Things that surprise people</a>
 </div>
 
@@ -212,155 +211,122 @@
   </p>
 </section>
 
-<section id="commands">
-  <h3>Command reference</h3>
+<section id="consume">
+  <h3>Consuming the repositories</h3>
   <p class="subtitle">
-    Set these once per shell. Replace <code>&lt;ui-password&gt;</code> with the value stored
-    when the Secret was created — it is not readable back out of the cluster.
-  </p>
-  <pre><code>export KC=kubeconfig/kubeconfig-tbs-dev.yaml
-export NS=pulp
-export IMG=wushie/pulp-ui
-export PW='&lt;ui-password&gt;'</code></pre>
-
-  <h4>Reach the UI</h4>
-  <pre><code># Through ingress-nginx
-kubectl --kubeconfig $KC -n ingress-system port-forward svc/ingress-nginx-controller 18443:443
-curl -sk --resolve pulp.dev.tbs.cloudeka.xyz:18443:127.0.0.1 \
-  -u operator:"$PW" https://pulp.dev.tbs.cloudeka.xyz:18443/ui/
-
-# Straight to the pod (no Host header, easiest for a browser)
-kubectl --kubeconfig $KC -n $NS port-forward svc/pulp-ops-svc 18090:8080
-# open http://127.0.0.1:18090/ui/</code></pre>
-
-  <h4>Check health</h4>
-  <pre><code>kubectl --kubeconfig $KC -n $NS get pods -l app.kubernetes.io/name=pulp-ops
-
-# Which digest is ACTUALLY running
-kubectl --kubeconfig $KC -n $NS get pod -l app.kubernetes.io/name=pulp-ops \
-  -o jsonpath='{.items[0].status.containerStatuses[0].imageID}{"\n"}'
-
-# Probes (no auth)
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18090/healthz   # 200
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18090/readyz    # 200 when Pulp up</code></pre>
-
-  <h4>Query the API directly</h4>
-  <pre><code># A safe GET issues the CSRF token; keep it for any mutation below
-TOKEN=$(curl -s -D - -o /dev/null -u operator:"$PW" \
-  http://127.0.0.1:18090/ui/api/activity?limit=1 \
-  | grep -i '^x-csrf-token' | tr -d '\r' | cut -d' ' -f2)
-
-curl -s -u operator:"$PW" http://127.0.0.1:18090/ui/api/overview | python3 -m json.tool
-curl -s -u operator:"$PW" 'http://127.0.0.1:18090/ui/api/content?domain=default' \
-  | python3 -m json.tool</code></pre>
-
-  <h4>Create a repository, then a distribution</h4>
-  <pre><code>curl -s -u operator:"$PW" -X POST \
-  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
-  -d '{"domain":"default","plugin":"rpm","name":"my-repo"}' \
-  http://127.0.0.1:18090/ui/api/content/repository
-# → {"pulp_href":"/pulp/default/api/v3/repositories/rpm/rpm/&lt;uuid&gt;/"}
-
-curl -s -u operator:"$PW" -X POST \
-  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
-  -d '{"domain":"default","plugin":"rpm","name":"my-dist",
-       "repository_href":"/pulp/default/api/v3/repositories/rpm/rpm/&lt;uuid&gt;/"}' \
-  http://127.0.0.1:18090/ui/api/content/distribution</code></pre>
-  <p>Container distributions also need <code>"base_path"</code>.</p>
-
-  <h4>Delete (preview, then confirm)</h4>
-  <pre><code>HREF='/pulp/default/api/v3/repositories/rpm/rpm/&lt;uuid&gt;/'
-
-# Preview — read the dependency line before doing anything
-curl -s -u operator:"$PW" \
-  "http://127.0.0.1:18090/ui/delete/preview?domain=default&amp;href=$HREF" \
-  | python3 -m json.tool
-
-# Unconfirmed — must be 400 and delete nothing
-curl -s -o /dev/null -w '%{http_code}\n' -u operator:"$PW" -X POST \
-  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
-  -d "{\"domain\":\"default\",\"href\":\"$HREF\",\"confirmed\":false}" \
-  http://127.0.0.1:18090/ui/api/delete
-
-# Confirmed
-curl -s -u operator:"$PW" -X POST \
-  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
-  -d "{\"domain\":\"default\",\"href\":\"$HREF\",\"confirmed\":true}" \
-  http://127.0.0.1:18090/ui/api/delete</code></pre>
-
-  <h4>Validation, and tracing an operation</h4>
-  <pre><code>curl -s -u operator:"$PW" -X POST \
-  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
-  -d '{"domain":"default"}' http://127.0.0.1:18090/ui/api/validation/run
-# → {"run_id":"...","assertions":[...]}
-
-curl -s -u operator:"$PW" -X POST \
-  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
-  -d '{"run_id":"&lt;run_id&gt;"}' http://127.0.0.1:18090/ui/api/validation/cleanup
-
-kubectl --kubeconfig $KC -n $NS logs deploy/pulp-ops | grep &lt;correlation-id&gt;</code></pre>
-
-  <h4>Build, push, deploy</h4>
-  <pre><code>cd ~/playground/pulp-ui
-
-.venv/bin/python -m pytest -q                       # must be green first
-docker build -t $IMG:0.2.0 .
-docker push  $IMG:0.2.0
-{% raw %}docker inspect --format='{{index .RepoDigests 0}}' $IMG:0.2.0{% endraw %}
-
-kubectl --kubeconfig $KC -n $NS set image deploy/pulp-ops \
-  pulp-ops=$IMG@sha256:&lt;new-digest&gt;
-kubectl --kubeconfig $KC -n $NS rollout status deploy/pulp-ops --timeout=200s
-
-python3 scripts/pulp-ops-smoke.py http://127.0.0.1:18090 operator "$PW"   # 12/12</code></pre>
-  <p>
-    <strong>Deploy by digest, not tag.</strong> Pushing to an existing tag does not update
-    nodes that already cached it — the rollout reports success while the pod keeps running
-    the old image. Always capture the digest and pin it, then record it in
-    <code>manifests/pulp/ui/pulp-ops-deployment.yaml</code>.
+    How to pull from the repositories this Pulp serves. Every URL below was verified
+    against the live server — the HTTP status is stated for each. Replace <code>default</code>
+    with your tenant's domain when you are not using the shared one.
   </p>
 
-  <h4>Roll back</h4>
-  <pre><code>kubectl --kubeconfig $KC -n $NS rollout undo deploy/pulp-ops
-kubectl --kubeconfig $KC -n $NS rollout status deploy/pulp-ops --timeout=200s</code></pre>
-</section>
+  <h4>RPM (dnf / yum)</h4>
+  <pre><code># /etc/yum.repos.d/pulp.repo
+[pulp-rocky9-baseos]
+name=Pulp rocky9-baseos
+baseurl=https://pulp.dev.tbs.cloudeka.xyz/pulp/content/default/rpm/rocky9-baseos/
+enabled=1
+gpgcheck=0</code></pre>
+  <pre><code>sudo dnf clean all &amp;&amp; sudo dnf repolist
+sudo dnf install &lt;package&gt;</code></pre>
+  <p class="subtitle">
+    Verified: <code>GET /pulp/content/default/rpm/rocky9-baseos/repodata/repomd.xml</code>
+    → 200, no authentication. Other RPM distributions: <code>rpm/rocky9-appstream</code>,
+    <code>rpm/epel9</code> — swap the last path segment.
+  </p>
 
-<section id="flows">
-  <h3>Flows</h3>
+  <h4>DEB (apt)</h4>
+  <pre><code>echo "deb [trusted=yes] https://pulp.dev.tbs.cloudeka.xyz/pulp/content/default/deb/ubuntu-noble/ noble main" \
+  | sudo tee /etc/apt/sources.list.d/pulp.list
+sudo apt update &amp;&amp; sudo apt install &lt;package&gt;</code></pre>
+  <p class="subtitle">
+    Verified: <code>GET /pulp/content/default/deb/ubuntu-noble/dists/noble/Release</code>
+    → 200, no authentication. Also available: <code>deb/ubuntu-jammy</code>.
+    <code>[trusted=yes]</code> is required because the repository is not GPG-signed — keep
+    it only if you accept that trade-off.
+  </p>
 
-  <h4>Deploy flow</h4>
-  <pre><code>edit source in pulp-ui
-   │
-   ├─ pytest -q                       ← green before anything else
-   ├─ docker build / docker push
-   ├─ docker inspect … RepoDigests    ← capture the NEW digest
-   ├─ kubectl set image …@sha256:&lt;new&gt;
-   ├─ kubectl rollout status
-   ├─ smoke script                    ← 12/12 required
-   ├─ update the digest in the manifest
-   └─ commit                          ← manifest and cluster stay in step</code></pre>
-  <p>If the smoke test fails, stop and <code>rollout undo</code>. Never record a digest you
-  have not smoke-tested.</p>
+  <h4>Python (pip)</h4>
+  <pre><code>pip install --index-url https://pulp.dev.tbs.cloudeka.xyz/pulp/content/default/python/pypi/simple/ &lt;package&gt;</code></pre>
+  <p class="subtitle">Persist it in <code>~/.pip/pip.conf</code>:</p>
+  <pre><code>[global]
+index-url = https://pulp.dev.tbs.cloudeka.xyz/pulp/content/default/python/pypi/simple/
+trusted-host = pulp.dev.tbs.cloudeka.xyz</code></pre>
+  <p class="subtitle">
+    Verified: <code>GET /pulp/content/default/python/pypi/simple/</code> → 200, no
+    authentication.
+  </p>
 
-  <h4>Operator flow</h4>
-  <pre><code>Overview ─── is Pulp healthy? any failed tasks?
-   │
-   ├─ Tenants ─── Preview ─── read probe_warnings ─── Apply
-   │                                    └─ stops at first failure, prints recovery
-   ├─ Content ─── Create repository ─── copy pulp_href
-   │                 └── Create distribution (paste href)
-   │                       └── optional: Sync (allowlisted https host)
-   ├─ Tasks ───── wait for `completed`
-   ├─ Validation ─ run → read run_id → cleanup
-   ├─ Activity ─── copy correlation_id → grep the pod logs
-   └─ /ui/delete ─ paste href → Preview → read dependency line → tick → Delete</code></pre>
-  <p>
-    Two rules hold that together: <strong>Preview before Apply, Preview before
-    Delete</strong> — neither is a formality. And when something looks unfinished,
-    <strong>check Tasks</strong>: Pulp operations are asynchronous.
+  <h4>Ansible Galaxy (ansible-galaxy)</h4>
+  <p class="subtitle">
+    This one does <strong>not</strong> live under <code>/pulp/content/</code>. Ask Pulp for
+    the distribution's own <code>client_url</code> and use that — do not guess the path:
+  </p>
+  <pre><code>curl -s -u admin:'&lt;admin-password&gt;' \
+  'https://pulp.dev.tbs.cloudeka.xyz/pulp/default/api/v3/distributions/ansible/ansible/' \
+  | python3 -c "import json,sys; [print(r['name'], r['client_url']) for r in json.load(sys.stdin)['results']]"</code></pre>
+  <p class="subtitle">
+    On this cluster that returns
+    <code>https://pulp.dev.tbs.cloudeka.xyz/pulp_ansible/galaxy/default/ansible/galaxy/</code>,
+    so:
+  </p>
+  <pre><code>ansible-galaxy collection install &lt;namespace&gt;.&lt;collection&gt; -c \
+  -s https://pulp.dev.tbs.cloudeka.xyz/pulp_ansible/galaxy/default/ansible/galaxy/
+
+# or persistently, in ansible.cfg
+[galaxy]
+server_list = pulp
+
+[galaxy_server.pulp]
+url = https://pulp.dev.tbs.cloudeka.xyz/pulp_ansible/galaxy/default/ansible/galaxy/</code></pre>
+  <p class="subtitle">
+    Verified: the galaxy API root
+    <code>/pulp_ansible/galaxy/default/ansible/galaxy/api/</code> answers 200 without
+    credentials, while content endpoints answer 401 — so some operations need
+    <code>username</code>/<code>password</code> in the server block.
+  </p>
+
+  <h4>Container images (docker / podman)</h4>
+  <p class="subtitle">
+    The registry uses a <strong>different path shape and a different service</strong> than
+    the package content: <code>/v2/&lt;domain&gt;/&lt;distribution base_path&gt;</code>. The base path
+    itself contains slashes.
+  </p>
+  <pre><code>docker login pulp.dev.tbs.cloudeka.xyz
+
+docker pull pulp.dev.tbs.cloudeka.xyz/v2/default/dockerhub/library/alpine:latest
+docker pull pulp.dev.tbs.cloudeka.xyz/v2/default/quay/prometheus/prometheus:latest</code></pre>
+  <p class="subtitle">
+    Verified: <code>GET /v2/</code> answers <code>401</code> with
+    <code>WWW-Authenticate: Bearer realm="https://pulp.dev.tbs.cloudeka.xyz/token/"</code>
+    — the standard registry challenge. That 401 is the proof the registry is alive; a 404
+    would mean the path is wrong. A client that authenticates against the advertised realm
+    receives a bearer token and then pulls.
+  </p>
+  <p class="subtitle">
+    Registry base paths here: <code>dockerhub/library/{alpine,nginx,busybox}</code>,
+    <code>quay/prometheus/prometheus</code>,
+    <code>quay/containerdisks/{centos-stream,ubuntu}</code>,
+    <code>quay/kubevirt/cirros-container-disk-demo</code>.
+  </p>
+
+  <h4>Which types need credentials</h4>
+  <table>
+    <thead><tr><th>Type</th><th>Anonymous pull</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>RPM</td><td>Yes</td><td>Verified 200 without auth</td></tr>
+      <tr><td>DEB</td><td>Yes</td><td>Verified 200 without auth</td></tr>
+      <tr><td>Python</td><td>Yes</td><td>Verified 200 without auth</td></tr>
+      <tr><td>Ansible galaxy</td><td>API root yes; content endpoints 401</td><td>Credentials may be needed in the server block</td></tr>
+      <tr><td>Container registry</td><td>No</td><td>Always issues a Bearer challenge; <code>docker login</code> first</td></tr>
+    </tbody>
+  </table>
+  <p class="subtitle">
+    Anonymous read access comes from Pulp's content-guard configuration, not from this UI.
+    Making a repository private is a content guard on the distribution, set through Pulp.
   </p>
 </section>
 
+<section id="surprises">
 <section id="surprises">
   <h3>Things that surprise people</h3>
   <ul>

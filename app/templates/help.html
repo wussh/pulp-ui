@@ -13,6 +13,8 @@
   <a href="#pages">Pages</a>
   <a href="#example">Worked example</a>
   <a href="#delete">Deleting a resource</a>
+  <a href="#commands">Commands</a>
+  <a href="#flows">Flows</a>
   <a href="#surprises">Things that surprise people</a>
 </div>
 
@@ -207,6 +209,155 @@
     Only plugin-scoped resources are deletable here — repositories, distributions, remotes,
     tasks. Domains, users, and groups are <strong>not</strong>: their hrefs are rejected by
     design. Remove those through the Pulp API.
+  </p>
+</section>
+
+<section id="commands">
+  <h3>Command reference</h3>
+  <p class="subtitle">
+    Set these once per shell. Replace <code>&lt;ui-password&gt;</code> with the value stored
+    when the Secret was created — it is not readable back out of the cluster.
+  </p>
+  <pre><code>export KC=kubeconfig/kubeconfig-tbs-dev.yaml
+export NS=pulp
+export IMG=wushie/pulp-ui
+export PW='&lt;ui-password&gt;'</code></pre>
+
+  <h4>Reach the UI</h4>
+  <pre><code># Through ingress-nginx
+kubectl --kubeconfig $KC -n ingress-system port-forward svc/ingress-nginx-controller 18443:443
+curl -sk --resolve pulp.dev.tbs.cloudeka.xyz:18443:127.0.0.1 \
+  -u operator:"$PW" https://pulp.dev.tbs.cloudeka.xyz:18443/ui/
+
+# Straight to the pod (no Host header, easiest for a browser)
+kubectl --kubeconfig $KC -n $NS port-forward svc/pulp-ops-svc 18090:8080
+# open http://127.0.0.1:18090/ui/</code></pre>
+
+  <h4>Check health</h4>
+  <pre><code>kubectl --kubeconfig $KC -n $NS get pods -l app.kubernetes.io/name=pulp-ops
+
+# Which digest is ACTUALLY running
+kubectl --kubeconfig $KC -n $NS get pod -l app.kubernetes.io/name=pulp-ops \
+  -o jsonpath='{.items[0].status.containerStatuses[0].imageID}{"\n"}'
+
+# Probes (no auth)
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18090/healthz   # 200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18090/readyz    # 200 when Pulp up</code></pre>
+
+  <h4>Query the API directly</h4>
+  <pre><code># A safe GET issues the CSRF token; keep it for any mutation below
+TOKEN=$(curl -s -D - -o /dev/null -u operator:"$PW" \
+  http://127.0.0.1:18090/ui/api/activity?limit=1 \
+  | grep -i '^x-csrf-token' | tr -d '\r' | cut -d' ' -f2)
+
+curl -s -u operator:"$PW" http://127.0.0.1:18090/ui/api/overview | python3 -m json.tool
+curl -s -u operator:"$PW" 'http://127.0.0.1:18090/ui/api/content?domain=default' \
+  | python3 -m json.tool</code></pre>
+
+  <h4>Create a repository, then a distribution</h4>
+  <pre><code>curl -s -u operator:"$PW" -X POST \
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
+  -d '{"domain":"default","plugin":"rpm","name":"my-repo"}' \
+  http://127.0.0.1:18090/ui/api/content/repository
+# → {"pulp_href":"/pulp/default/api/v3/repositories/rpm/rpm/&lt;uuid&gt;/"}
+
+curl -s -u operator:"$PW" -X POST \
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
+  -d '{"domain":"default","plugin":"rpm","name":"my-dist",
+       "repository_href":"/pulp/default/api/v3/repositories/rpm/rpm/&lt;uuid&gt;/"}' \
+  http://127.0.0.1:18090/ui/api/content/distribution</code></pre>
+  <p>Container distributions also need <code>"base_path"</code>.</p>
+
+  <h4>Delete (preview, then confirm)</h4>
+  <pre><code>HREF='/pulp/default/api/v3/repositories/rpm/rpm/&lt;uuid&gt;/'
+
+# Preview — read the dependency line before doing anything
+curl -s -u operator:"$PW" \
+  "http://127.0.0.1:18090/ui/delete/preview?domain=default&amp;href=$HREF" \
+  | python3 -m json.tool
+
+# Unconfirmed — must be 400 and delete nothing
+curl -s -o /dev/null -w '%{http_code}\n' -u operator:"$PW" -X POST \
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
+  -d "{\"domain\":\"default\",\"href\":\"$HREF\",\"confirmed\":false}" \
+  http://127.0.0.1:18090/ui/api/delete
+
+# Confirmed
+curl -s -u operator:"$PW" -X POST \
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
+  -d "{\"domain\":\"default\",\"href\":\"$HREF\",\"confirmed\":true}" \
+  http://127.0.0.1:18090/ui/api/delete</code></pre>
+
+  <h4>Validation, and tracing an operation</h4>
+  <pre><code>curl -s -u operator:"$PW" -X POST \
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
+  -d '{"domain":"default"}' http://127.0.0.1:18090/ui/api/validation/run
+# → {"run_id":"...","assertions":[...]}
+
+curl -s -u operator:"$PW" -X POST \
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: $TOKEN" \
+  -d '{"run_id":"&lt;run_id&gt;"}' http://127.0.0.1:18090/ui/api/validation/cleanup
+
+kubectl --kubeconfig $KC -n $NS logs deploy/pulp-ops | grep &lt;correlation-id&gt;</code></pre>
+
+  <h4>Build, push, deploy</h4>
+  <pre><code>cd ~/playground/pulp-ui
+
+.venv/bin/python -m pytest -q                       # must be green first
+docker build -t $IMG:0.2.0 .
+docker push  $IMG:0.2.0
+docker inspect --format='{{index .RepoDigests 0}}' $IMG:0.2.0
+
+kubectl --kubeconfig $KC -n $NS set image deploy/pulp-ops \
+  pulp-ops=$IMG@sha256:&lt;new-digest&gt;
+kubectl --kubeconfig $KC -n $NS rollout status deploy/pulp-ops --timeout=200s
+
+python3 scripts/pulp-ops-smoke.py http://127.0.0.1:18090 operator "$PW"   # 12/12</code></pre>
+  <p>
+    <strong>Deploy by digest, not tag.</strong> Pushing to an existing tag does not update
+    nodes that already cached it — the rollout reports success while the pod keeps running
+    the old image. Always capture the digest and pin it, then record it in
+    <code>manifests/pulp/ui/pulp-ops-deployment.yaml</code>.
+  </p>
+
+  <h4>Roll back</h4>
+  <pre><code>kubectl --kubeconfig $KC -n $NS rollout undo deploy/pulp-ops
+kubectl --kubeconfig $KC -n $NS rollout status deploy/pulp-ops --timeout=200s</code></pre>
+</section>
+
+<section id="flows">
+  <h3>Flows</h3>
+
+  <h4>Deploy flow</h4>
+  <pre><code>edit source in pulp-ui
+   │
+   ├─ pytest -q                       ← green before anything else
+   ├─ docker build / docker push
+   ├─ docker inspect … RepoDigests    ← capture the NEW digest
+   ├─ kubectl set image …@sha256:&lt;new&gt;
+   ├─ kubectl rollout status
+   ├─ smoke script                    ← 12/12 required
+   ├─ update the digest in the manifest
+   └─ commit                          ← manifest and cluster stay in step</code></pre>
+  <p>If the smoke test fails, stop and <code>rollout undo</code>. Never record a digest you
+  have not smoke-tested.</p>
+
+  <h4>Operator flow</h4>
+  <pre><code>Overview ─── is Pulp healthy? any failed tasks?
+   │
+   ├─ Tenants ─── Preview ─── read probe_warnings ─── Apply
+   │                                    └─ stops at first failure, prints recovery
+   ├─ Content ─── Create repository ─── copy pulp_href
+   │                 └── Create distribution (paste href)
+   │                       └── optional: Sync (allowlisted https host)
+   ├─ Tasks ───── wait for `completed`
+   ├─ Validation ─ run → read run_id → cleanup
+   ├─ Activity ─── copy correlation_id → grep the pod logs
+   └─ /ui/delete ─ paste href → Preview → read dependency line → tick → Delete</code></pre>
+  <p>
+    Two rules hold that together: <strong>Preview before Apply, Preview before
+    Delete</strong> — neither is a formality. And when something looks unfinished,
+    <strong>check Tasks</strong>: Pulp operations are asynchronous.
   </p>
 </section>
 

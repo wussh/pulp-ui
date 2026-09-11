@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Pulp Operator UI{% endblock %}</title>
+  <link rel="stylesheet" href="/ui/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">Pulp Ops</span>
+    <nav>
+      <a href="/ui/">Overview</a>
+      <a href="/ui/tenants">Tenants</a>
+      <a href="/ui/content">Content</a>
+      <a href="/ui/tasks">Tasks</a>
+      <a href="/ui/validation">Validation</a>
+      <a href="/ui/activity">Activity</a>
+    </nav>
+    <span class="operator">{{ current_user }}</span>
+  </header>
+  <main>
+    {% for warning in warnings or [] %}
+      <p class="warning" data-code="{{ warning.code }}">{{ warning.message }}</p>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+  <script src="/ui/static/app.js"></script>
+</body>
+</html>

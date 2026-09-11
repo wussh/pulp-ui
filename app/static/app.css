@@ -1,0 +1,10 @@
+body { font-family: system-ui, sans-serif; margin: 0; }
+.topbar { display: flex; gap: 1rem; padding: 0.75rem 1rem; background: #1f2937; color: #fff; align-items: center; }
+.topbar a { color: #cbd5e1; margin-right: 0.75rem; }
+.brand { font-weight: 600; }
+main { padding: 1.5rem; max-width: 60rem; }
+.facts dt { font-weight: 600; }
+.warning { background: #fef3c7; border-left: 4px solid #d97706; padding: 0.5rem 0.75rem; }
+.subtitle { color: #6b7280; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #e5e7eb; }

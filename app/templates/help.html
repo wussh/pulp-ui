@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block title %}Help — Pulp Operator UI{% endblock %}
+{% block content %}
+<h2>How to use this console</h2>
+
+<p class="subtitle">
+  This console replaces the ad-hoc <code>scripts/pulp/*.py</code> workflow. It owns no
+  state: <strong>Pulp remains the source of truth for every resource</strong>. The
+  activity records it keeps live in memory only and vanish when the pod restarts.
+</p>
+
+<div class="help-toc">
+  <a href="#pages">Pages</a>
+  <a href="#example">Worked example</a>
+  <a href="#delete">Deleting a resource</a>
+  <a href="#surprises">Things that surprise people</a>
+</div>
+
+<section id="pages">
+  <h3>The pages, in workflow order</h3>
+  <p class="subtitle">The navigation follows the order an operator actually works in.</p>
+
+  <h4>Overview</h4>
+  <p>
+    Read this first. It reports whether the internal Pulp API is reachable, the
+    <code>pulpcore</code> version, the public route status, and counts of domains,
+    container repositories and distributions, active tasks, and failed tasks.
+  </p>
+  <p>
+    A yellow <code>pulp.failed_tasks</code> warning means Pulp has failed tasks — go to
+    Tasks and filter by state <code>failed</code>. Everything here is read-only.
+  </p>
+
+  <h4>Tenants</h4>
+  <p>Shows domains, users, and groups, and drives guided tenant setup.</p>
+  <p>Setup is <strong>preview then apply</strong>, never one step:</p>
+  <ol>
+    <li>Fill in Domain, Username, and Group.</li>
+    <li>
+      Click <strong>Preview</strong>. The server reports each planned step as
+      <code>create</code> or <code>reuse</code> against what already exists.
+    </li>
+    <li>
+      Read any <code>probe_warnings</code>. A warning means a lookup did not complete
+      cleanly, so the plan may be optimistic about what already exists. Fix the cause
+      before applying.
+    </li>
+    <li>Click <strong>Apply</strong> — now enabled.</li>
+  </ol>
+  <p>
+    Apply submits the steps in order and <strong>stops at the first failure</strong>.
+    There is no automatic rollback. The response lists the resources that were completed,
+    the step that failed, and a <code>recovery</code> string explaining what to do next.
+  </p>
+  <p>
+    That recovery text is deliberately specific about what this UI cannot undo: domains,
+    users, and groups cannot be deleted from the delete page, so it names the Pulp API as
+    the way to remove them. Re-running Apply is safe — it re-fetches current state and
+    performs only the steps still missing.
+  </p>
+
+  <h4>Content</h4>
+  <p>
+    Lists repositories and distributions per plugin (RPM, DEB, Python, Ansible,
+    Container), filtered by domain, and provides three forms.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Form</th><th>Fields</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Create repository</td>
+        <td>domain, plugin, name</td>
+        <td>Returns a <code>pulp_href</code> — keep it</td>
+      </tr>
+      <tr>
+        <td>Create distribution</td>
+        <td>domain, plugin, name, repository href, base path</td>
+        <td><code>base_path</code> is required for container only</td>
+      </tr>
+      <tr>
+        <td>Sync repository</td>
+        <td>domain, plugin, repository href, remote URL, remote name</td>
+        <td>URL must be <code>https</code> and the host must be on the allowlist</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    The repository-href field must be a full record href from the same domain and plugin.
+    The server rejects a foreign domain's href and a collection-level href with
+    <code>400</code>.
+  </p>
+  <p>
+    A new repository needs a distribution before clients can consume it. For an RPM
+    repository that is a two-step flow: create the repository, copy the returned href,
+    then create a distribution pointing at it.
+  </p>
+  <p>
+    If Sync returns a <code>task_href</code>, the browser navigates to the task detail
+    page automatically so you can watch progress.
+  </p>
+  <p>
+    <strong>Per-plugin failures are isolated.</strong> If one plugin's endpoint fails, the
+    page still loads the others and prints a warning naming the plugin that failed. The
+    page only errors when every plugin fails. Treat a plugin warning as "this plugin's
+    data is missing from this view", not as "Pulp is down".
+  </p>
+
+  <h4>Tasks</h4>
+  <p>
+    Lists Pulp tasks filtered by domain and state (<code>running</code>,
+    <code>waiting</code>, <code>completed</code>, <code>failed</code>,
+    <code>canceled</code>, <code>skipped</code>). Click <em>open</em> on a row for detail.
+  </p>
+  <p>
+    The detail page polls every two seconds while the task is unfinished and stops on a
+    terminal state. It shows progress reports, the resources the task created, and — on
+    failure — a bounded error summary.
+  </p>
+
+  <h4>Validation</h4>
+  <p>
+    Runs the tenant-isolation check against a domain. It reports three assertions, each
+    <code>PASS</code> or <code>FAIL</code> with evidence: <code>domain_isolation</code>,
+    <code>resource_creation</code>, and <code>resource_listing</code>.
+  </p>
+  <p>
+    The check creates a uniquely named test resource, then cross-reads a
+    <strong>different</strong> domain and asserts the created href is absent there. That
+    ordering is deliberate: an isolation assertion that reads before creating can never
+    fail, which is worse than no assertion. It also means a <code>FAIL</code> may leave one
+    disposable resource behind — the response returns a <code>run_id</code>, and
+    <code>POST /ui/api/validation/cleanup</code> with that id deletes only the hrefs that
+    run recorded.
+  </p>
+  <p>
+    If the cross-domain search hits its page cap, the assertion reports
+    <code>FAIL</code> with a "truncated" note rather than <code>PASS</code>. A truncated
+    search cannot prove isolation.
+  </p>
+
+  <h4>Activity</h4>
+  <p>
+    The in-process record of what this pod has done: timestamp (UTC), operator, action,
+    target type and identifier, result, and correlation ID.
+  </p>
+  <p>
+    <strong>These records live in memory only.</strong> A pod restart clears them. They are
+    not an audit log and should not be used as one. Use the correlation ID to find the
+    matching server logs:
+  </p>
+  <pre><code>kubectl -n pulp logs deploy/pulp-ops | grep &lt;correlation-id&gt;</code></pre>
+</section>
+
+<section id="example">
+  <h3>Worked example — publishing an RPM repository</h3>
+  <ol>
+    <li><strong>Overview</strong> — confirm Pulp is reachable and no failed-task warning is showing.</li>
+    <li>
+      <strong>Content</strong> — Domain <code>default</code>, Plugin <code>rpm</code>,
+      Name <code>&lt;repo-name&gt;</code> → Create. The output shows the new
+      <code>pulp_href</code>.
+    </li>
+    <li>Copy that href.</li>
+    <li>
+      <strong>Content</strong> — in Create distribution, paste it into Repository href,
+      give the distribution a name → Create.
+    </li>
+    <li><strong>Tasks</strong> — watch the task reach <code>completed</code>.</li>
+    <li><strong>Content</strong> — the repository now appears under the <code>rpm</code> section.</li>
+  </ol>
+</section>
+
+<section id="delete">
+  <h3>Deleting a resource</h3>
+  <p>
+    Deletion is not in the navigation. Open <a href="/ui/delete"><code>/ui/delete</code></a>
+    directly. The flow is layered on purpose:
+  </p>
+  <ol>
+    <li>Enter the domain and the exact resource href.</li>
+    <li>
+      Click <strong>Preview</strong>. This is required, not decorative — it fetches the
+      resource and shows its current type, name, domain, and href, plus a dependency
+      warning.
+    </li>
+    <li>
+      Read the dependency warning:
+      <ul>
+        <li><code>Referenced by: ...</code> — something still uses this resource.</li>
+        <li><code>No dependencies recorded</code> — nothing references it.</li>
+        <li>
+          <code>Dependency check could not complete: ...</code> — the lookup failed.
+          <strong>Do not read this as "no dependencies."</strong> The answer is unknown.
+        </li>
+      </ul>
+    </li>
+    <li>Tick the confirmation checkbox.</li>
+    <li>Click <strong>Delete</strong>.</li>
+  </ol>
+  <p>
+    Without the tick the server returns <code>400</code> and issues no delete. The gate is
+    enforced server-side, so disabling JavaScript or posting directly does not bypass it.
+  </p>
+  <p>
+    Only plugin-scoped resources are deletable here — repositories, distributions, remotes,
+    tasks. Domains, users, and groups are <strong>not</strong>: their hrefs are rejected by
+    design. Remove those through the Pulp API.
+  </p>
+</section>
+
+<section id="surprises">
+  <h3>Things that surprise people</h3>
+  <ul>
+    <li>
+      <strong>Task operations are asynchronous.</strong> An empty-looking result usually
+      means the task is still running. Check Tasks before concluding something failed.
+    </li>
+    <li>
+      <strong>Preview is load-bearing</strong> for tenant Apply and for Delete. Both exist
+      because the operation that follows is hard to undo.
+    </li>
+    <li>
+      <strong>Activity is not durable.</strong> It is a debugging aid for the current pod,
+      nothing more.
+    </li>
+    <li>
+      <strong>The Content page can be partially populated.</strong> A per-plugin warning is
+      a gap in one plugin's data, not a failed page.
+    </li>
+    <li>
+      <strong>A dependency check that fails is not a dependency check that passed.</strong>
+      The three states are distinguished deliberately.
+    </li>
+  </ul>
+</section>
+{% endblock %}

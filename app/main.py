@@ -5,7 +5,16 @@ from fastapi.staticfiles import StaticFiles
 from app.config import Settings
 from app.logging_config import configure_logging
 from app.middleware import BasicAuthMiddleware, CsrfMiddleware
-from app.routes import activity, content, destroy, overview, tasks, tenants, validation
+from app.routes import (
+    activity,
+    content,
+    destroy,
+    help as help_routes,
+    overview,
+    tasks,
+    tenants,
+    validation,
+)
 from app.state import ActivityStore, CorrelationStore, RunStore
 
 configure_logging()
@@ -57,4 +66,5 @@ def create_app(settings: Settings, client_factory=None) -> FastAPI:
     app.include_router(validation.router, prefix="/ui")
     app.include_router(destroy.router, prefix="/ui")
     app.include_router(activity.router, prefix="/ui")
+    app.include_router(help_routes.router, prefix="/ui")
     return app

@@ -8,3 +8,9 @@ main { padding: 1.5rem; max-width: 60rem; }
 .subtitle { color: #6b7280; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #e5e7eb; }
+.help-toc { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0 1.5rem; }
+.help-toc a { color: #2563eb; }
+section { margin-bottom: 1.5rem; }
+section h4 { margin-bottom: 0.25rem; }
+pre { background: #f3f4f6; padding: 0.5rem 0.75rem; overflow-x: auto; }
+code { background: #f3f4f6; padding: 0.05rem 0.25rem; }

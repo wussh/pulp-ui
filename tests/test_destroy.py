@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from app.main import create_app
 from tests.helpers import authed_client, csrf_headers, make_client
@@ -76,6 +77,34 @@ def test_delete_rejects_href_outside_requested_domain(settings):
             },
         )
     assert response.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"domain": "default", "href": REPO_HREF},
+        {"domain": "default", "href": REPO_HREF, "confirmed": "false"},
+        {"domain": "default", "href": REPO_HREF, "confirmed": 1},
+        {"domain": "default", "href": REPO_HREF, "confirmed": None},
+    ],
+    ids=["absent", "string-false", "int-one", "null"],
+)
+def test_delete_rejects_non_true_confirmation_shapes(settings, payload):
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        return httpx.Response(200, json={"name": "demo-repo", "pulp_href": REPO_HREF})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/delete",
+            headers=csrf_headers(test_client),
+            json=payload,
+        )
+    assert response.status_code == 400
+    assert calls == []
 
 
 def test_delete_rejects_collection_href(settings):

@@ -140,6 +140,81 @@ def test_isolation_fails_when_foreign_domain_leaks_created_href(settings):
     assert "foreign_domain_leak=True" in evidence
 
 
+def test_isolation_follows_pagination_on_foreign_listing(settings):
+    # The leaked href is only on page 2. A single-page membership test reports PASS
+    # here; following `next` is the regression guard for that false PASS.
+    foreign = "/pulp/dummy-beta/api/v3/repositories/rpm/rpm/"
+
+    def handler(request):
+        if request.method == "POST" and request.url.path == REPO_COLLECTION:
+            return httpx.Response(201, json={"pulp_href": REPO_COLLECTION + "1/"})
+        if request.url.path == foreign:
+            if request.url.params.get("offset") == "1":
+                return httpx.Response(
+                    200,
+                    json={
+                        "count": 2,
+                        "next": None,
+                        "results": [{"pulp_href": REPO_COLLECTION + "1/"}],
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "count": 2,
+                    "next": f"{foreign}?offset=1",
+                    "results": [{"pulp_href": foreign + "other/"}],
+                },
+            )
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        body = test_client.post(
+            "/ui/api/validation/run", headers=csrf_headers(test_client),
+            json={"domain": "default"}
+        ).json()
+    statuses = {item["name"]: item["status"] for item in body["assertions"]}
+    assert statuses["domain_isolation"] == "FAIL"
+    evidence = {item["name"]: item["evidence"] for item in body["assertions"]}[
+        "domain_isolation"
+    ]
+    assert "foreign_domain_leak=True" in evidence
+
+
+def test_isolation_reports_fail_when_pagination_is_truncated(settings):
+    # Upstream always advertises a further page. The bounded walk stops; a search
+    # that did not finish must never be reported as PASS.
+    foreign = "/pulp/dummy-beta/api/v3/repositories/rpm/rpm/"
+
+    def handler(request):
+        if request.method == "POST" and request.url.path == REPO_COLLECTION:
+            return httpx.Response(201, json={"pulp_href": REPO_COLLECTION + "1/"})
+        if request.url.path == foreign:
+            return httpx.Response(
+                200,
+                json={
+                    "count": 999,
+                    "next": f"{foreign}?offset=next",
+                    "results": [],
+                },
+            )
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        body = test_client.post(
+            "/ui/api/validation/run", headers=csrf_headers(test_client),
+            json={"domain": "default"}
+        ).json()
+    statuses = {item["name"]: item["status"] for item in body["assertions"]}
+    assert statuses["domain_isolation"] == "FAIL"
+    evidence = {item["name"]: item["evidence"] for item in body["assertions"]}[
+        "domain_isolation"
+    ]
+    assert "truncated" in evidence
+
+
 def test_isolation_fails_when_creation_fails(settings):
     def handler(request):
         if request.method == "POST" and request.url.path == REPO_COLLECTION:

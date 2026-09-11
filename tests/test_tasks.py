@@ -125,6 +125,30 @@ def test_task_detail_error_shape_is_string_coerced(settings):
     assert body["error"]["description"] == "['boom']"
 
 
+def test_task_list_failure_includes_correlation_id(settings):
+    def handler(request):
+        return httpx.Response(500, json={})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.get("/ui/api/tasks?domain=default")
+    assert response.status_code == 500
+    assert response.json()["correlation_id"]
+
+
+def test_task_detail_failure_includes_correlation_id(settings):
+    def handler(request):
+        return httpx.Response(500, json={})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.get(
+            "/ui/api/tasks/detail?domain=default&href=/pulp/default/api/v3/tasks/1/"
+        )
+    assert response.status_code == 500
+    assert response.json()["correlation_id"]
+
+
 def test_task_detail_page_passes_domain_to_poller(settings):
     def handler(request):
         return httpx.Response(200, json={"state": "running"})

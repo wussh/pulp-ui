@@ -145,7 +145,8 @@ async def tasks_api(request: Request) -> JSONResponse:
     except PulpError as exc:
         await client.aclose()
         return JSONResponse(
-            {"error": exc.safe_message}, status_code=exc.status_code or 502
+            {"error": exc.safe_message, "correlation_id": exc.correlation_id},
+            status_code=exc.status_code or 502,
         )
     await client.aclose()
     return JSONResponse(body)
@@ -166,7 +167,8 @@ async def task_detail_api(request: Request) -> JSONResponse:
     except PulpError as exc:
         await client.aclose()
         return JSONResponse(
-            {"error": exc.safe_message}, status_code=exc.status_code or 502
+            {"error": exc.safe_message, "correlation_id": exc.correlation_id},
+            status_code=exc.status_code or 502,
         )
     await client.aclose()
     return JSONResponse(body)

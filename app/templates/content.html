@@ -77,14 +77,18 @@ function bindContentForm(formId, outputId, url, onBody) {
   });
 }
 
-bindContentForm("repo-form", "repo-output", "/ui/api/content/repository");
-bindContentForm("distribution-form", "distribution-output", "/ui/api/content/distribution");
-bindContentForm("sync-form", "sync-output", "/ui/api/content/sync", function (payload, body) {
+function followTask(payload, body) {
   if (body.task_href) {
     window.location.href =
       "/ui/tasks/detail?domain=" + encodeURIComponent(payload.domain) +
       "&href=" + encodeURIComponent(body.task_href);
   }
-});
+}
+
+bindContentForm("repo-form", "repo-output", "/ui/api/content/repository");
+bindContentForm(
+  "distribution-form", "distribution-output", "/ui/api/content/distribution", followTask
+);
+bindContentForm("sync-form", "sync-output", "/ui/api/content/sync", followTask);
 </script>
 {% endblock %}

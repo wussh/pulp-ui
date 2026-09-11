@@ -37,7 +37,10 @@ document.getElementById("preview-button").addEventListener("click", function () 
       } else if ("dependencies" in body) {
         depDd.textContent = "No dependencies recorded for this resource.";
       } else {
-        depDd.textContent = "Dependency check did not run.";
+        depDd.textContent =
+          "Dependency check could not complete: " +
+          (body.dependency_error || "unknown error") +
+          " Do not treat this as confirmation that the resource is unreferenced.";
       }
       list.appendChild(depDt);
       list.appendChild(depDd);

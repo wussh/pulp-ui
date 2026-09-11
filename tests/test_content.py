@@ -78,6 +78,30 @@ def test_create_distribution_uses_plugin_scoped_endpoint(settings, plugin, path)
     assert seen["path"] == path
 
 
+def test_async_distribution_creation_surfaces_task_href(settings):
+    # Pulp distribution creation answers 202 with a task and no pulp_href. Dropping
+    # the task href would leave acceptance criterion 4 unmet for this operation.
+    task = "/pulp/default/api/v3/tasks/dist-1/"
+
+    def handler(request):
+        return httpx.Response(202, json={"task": task})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        body = test_client.post(
+            "/ui/api/content/distribution",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "default",
+                "plugin": "rpm",
+                "name": "demo-dist",
+                "repository_href": REPO_PATHS["rpm"] + "abc/",
+            },
+        ).json()
+    assert body["task_href"] == task
+    assert body["pulp_href"] == ""
+
+
 @pytest.mark.parametrize("plugin,path", list(REMOTE_PATHS.items()))
 def test_sync_uses_plugin_scoped_endpoints(settings, plugin, path):
     seen = []
@@ -262,6 +286,7 @@ def test_content_listing_fails_only_when_every_plugin_fails(settings):
     with authed_client(app) as test_client:
         response = test_client.get("/ui/api/content?domain=default")
     assert response.status_code == 502
+    assert response.json()["correlation_id"]
 
 
 @pytest.mark.parametrize(

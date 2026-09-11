@@ -32,6 +32,7 @@ async def list_content(client, domain: str) -> dict:
     domain = validate_name("domain", domain)
     out: dict[str, dict] = {}
     loaded = 0
+    last_correlation = ""
     for plugin in CONTENT_PLUGINS:
         entry: dict = {"repositories": [], "distributions": [], "error": ""}
         errors: list[str] = []
@@ -43,6 +44,7 @@ async def list_content(client, domain: str) -> dict:
             except PulpError as exc:
                 # A single broken plugin endpoint must not fail the whole page.
                 errors.append(f"{key}: {exc.safe_message}")
+                last_correlation = exc.correlation_id
                 continue
             entry[key] = _listing(response)
         if errors:
@@ -51,7 +53,9 @@ async def list_content(client, domain: str) -> dict:
             loaded += 1
         out[plugin] = entry
     if loaded == 0:
-        raise PulpError("every content plugin endpoint failed")
+        raise PulpError(
+            "every content plugin endpoint failed", correlation_id=last_correlation
+        )
     return {"domain": domain, "plugins": out}
 
 
@@ -222,7 +226,8 @@ async def content_api(request: Request) -> JSONResponse:
     except PulpError as exc:
         await client.aclose()
         return JSONResponse(
-            {"error": exc.safe_message}, status_code=exc.status_code or 502
+            {"error": exc.safe_message, "correlation_id": exc.correlation_id},
+            status_code=exc.status_code or 502,
         )
     await client.aclose()
     return JSONResponse(body)
@@ -263,7 +268,12 @@ async def distribution_create(
                 "result": "completed",
             }
         )
-        return {"pulp_href": created.get("pulp_href", "")}
+        # Distribution creation is asynchronous: Pulp answers 202 with a task and no
+        # pulp_href. Surface the task so the UI can link to live progress.
+        return {
+            "pulp_href": created.get("pulp_href", ""),
+            "task_href": created.get("task", ""),
+        }
 
     return await _guarded(request, handler)
 

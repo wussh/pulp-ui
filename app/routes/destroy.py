@@ -1,12 +1,83 @@
+import httpx
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from app.endpoints import plugin_api, validate_name
+from app.endpoints import (
+    CONTENT_PLUGINS,
+    plugin_api,
+    plugin_resource_path,
+    validate_name,
+)
 from app.pulp import PulpError
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+
+_PAGE_CAP = 20
+
+
+def _plugin_of(href: str) -> str | None:
+    # href shape: pulp/<domain>/api/v3/<collection>/<plugin>/<segment>/<id>/
+    parts = [part for part in href.split("/") if part]
+    if len(parts) < 6:
+        return None
+    plugin = parts[5]
+    return plugin if plugin in CONTENT_PLUGINS else None
+
+
+async def _referencing_distributions(client, domain: str, href: str) -> list[str]:
+    """Names of distributions in this domain whose `repository` is the target href.
+
+    A repository record has no dependency field, so the only way to warn before an
+    irreversible delete is to ask the distribution endpoints. Any failure here must
+    propagate: a lookup that did not complete is not the same as "no dependencies".
+    """
+    plugin = _plugin_of(href)
+    if plugin is None:
+        return []
+    path = plugin_api(domain, plugin_resource_path(plugin, "distribution"))
+    domain_prefix = plugin_api(domain, "")
+    names: list[str] = []
+    params = None
+    for _ in range(_PAGE_CAP):
+        page = await client.request("GET", path, params=params)
+        for item in page.get("results", []):
+            if item.get("repository") == href:
+                names.append(item.get("name") or "")
+        next_page = page.get("next")
+        if not next_page:
+            return names
+        # Pulp pages with an absolute URL; keep only the internal path and query.
+        try:
+            url = httpx.URL(str(next_page))
+        except httpx.InvalidURL:
+            raise PulpError("pagination next link was malformed") from None
+        if not url.path.startswith(domain_prefix):
+            raise PulpError("pagination next link left the requested domain")
+        path = url.path
+        params = dict(url.params) or None
+    # Never report "no dependencies" from a search that stopped early.
+    raise PulpError("dependency search was truncated before all pages")
+
+
+async def preview_target(client, domain: str, href: str) -> dict:
+    domain = validate_name("domain", domain)
+    href = _validated_href(domain, href)
+    record = await client.request("GET", href)
+    body = {
+        "href": record.get("pulp_href", href),
+        "type": _resource_type(href),
+        "name": record.get("name") or record.get("username") or "",
+        "domain": domain,
+    }
+    if _resource_type(href) == "repositories":
+        try:
+            names = await _referencing_distributions(client, domain, href)
+        except PulpError as exc:
+            return {**body, "dependency_error": exc.safe_message}
+        return {**body, "dependencies": ", ".join(names)}
+    return {**body, "dependencies": record.get("repository") or record.get("remote") or ""}
 
 
 def _validated_href(domain: str, href: str) -> str:
@@ -27,19 +98,6 @@ def _validated_href(domain: str, href: str) -> str:
 def _resource_type(href: str) -> str:
     parts = [part for part in href.split("/") if part]
     return parts[4] if len(parts) > 4 else "resource"
-
-
-async def preview_target(client, domain: str, href: str) -> dict:
-    domain = validate_name("domain", domain)
-    href = _validated_href(domain, href)
-    record = await client.request("GET", href)
-    return {
-        "href": record.get("pulp_href", href),
-        "type": _resource_type(href),
-        "name": record.get("name") or record.get("username") or "",
-        "domain": domain,
-        "dependencies": record.get("repository") or record.get("remote") or "",
-    }
 
 
 async def delete_target(

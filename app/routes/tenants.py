@@ -31,8 +31,11 @@ def _recovery_note(completed: list[dict], stopped: dict) -> str:
         f"({stopped['name']}) and nothing was rolled back. "
         f"Completed resources: {done or 'none'}. "
         "To recover, fix the cause of the failure and re-run setup (the plan "
-        "re-fetches existing resources and creates only what is missing), or delete "
-        "the completed resources listed above through the delete page."
+        "re-fetches existing resources and creates only what is missing). This UI's "
+        "delete page only removes plugin-scoped content resources such as "
+        "repositories and distributions; domains, users, and groups cannot be "
+        "deleted here. Remove those through Pulp directly, using the "
+        "pulpcore-manager shell inside the api pod or the Pulp REST API."
     )
 
 
@@ -202,7 +205,15 @@ async def apply_setup(client, plan: dict, correlation_id: str) -> dict:
                 "recovery": _recovery_note(completed, stopped),
                 "failed": True,
             }
-        completed.append({**step, "pulp_href": created.get("pulp_href", "")})
+        # Role assignment and several other steps answer 202 with a task; a step that
+        # dropped the task href would leave the operator unable to follow progress.
+        completed.append(
+            {
+                **step,
+                "pulp_href": created.get("pulp_href", ""),
+                "task_href": created.get("task", ""),
+            }
+        )
 
     return {"correlation_id": correlation_id, "completed": completed, "failed": False}
 
@@ -212,8 +223,26 @@ async def tenants_page(request: Request) -> HTMLResponse:
     client = request.app.state.client_factory()
     try:
         data = await list_tenants(client)
-    finally:
+    except PulpError as exc:
         await client.aclose()
+        return templates.TemplateResponse(
+            request,
+            "tenants.html",
+            {
+                "domains": [],
+                "users": [],
+                "groups": [],
+                "warnings": [
+                    {
+                        "code": "pulp.error",
+                        "message": f"{exc.safe_message} (correlation id: {exc.correlation_id})",
+                    }
+                ],
+                "current_user": "operator",
+            },
+            status_code=exc.status_code or 502,
+        )
+    await client.aclose()
     return templates.TemplateResponse(
         request, "tenants.html", {**data, "warnings": [], "current_user": "operator"}
     )
@@ -223,9 +252,15 @@ async def tenants_page(request: Request) -> HTMLResponse:
 async def tenants_api(request: Request) -> JSONResponse:
     client = request.app.state.client_factory()
     try:
-        return JSONResponse(await list_tenants(client))
-    finally:
+        body = await list_tenants(client)
+    except PulpError as exc:
         await client.aclose()
+        return JSONResponse(
+            {"error": exc.safe_message, "correlation_id": exc.correlation_id},
+            status_code=exc.status_code or 502,
+        )
+    await client.aclose()
+    return JSONResponse(body)
 
 
 @router.post("/api/tenants/plan")
@@ -239,7 +274,8 @@ async def tenants_plan(request: Request, payload: dict = Body(...)) -> JSONRespo
     except PulpError as exc:
         await client.aclose()
         return JSONResponse(
-            {"error": exc.safe_message}, status_code=exc.status_code or 502
+            {"error": exc.safe_message, "correlation_id": exc.correlation_id},
+            status_code=exc.status_code or 502,
         )
     await client.aclose()
     return JSONResponse(plan)
@@ -259,7 +295,8 @@ async def tenants_apply(request: Request, payload: dict = Body(...)) -> JSONResp
     except PulpError as exc:
         await client.aclose()
         return JSONResponse(
-            {"error": exc.safe_message}, status_code=exc.status_code or 502
+            {"error": exc.safe_message, "correlation_id": exc.correlation_id},
+            status_code=exc.status_code or 502,
         )
     await client.aclose()
 

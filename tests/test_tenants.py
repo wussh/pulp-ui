@@ -594,3 +594,35 @@ def test_apply_rejects_invalid_bucket_name(settings):
         )
     assert response.status_code == 400
     assert calls == []
+
+
+# --- Feature B: tenant credential stored via the UI --------------------------
+
+
+def test_tenant_credential_set_stores_and_never_echoes(settings):
+    from tests.helpers import FakeSecretsStore
+
+    fake = FakeSecretsStore()
+    app = create_app(settings, secrets_factory=lambda: fake)
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/tenants/credential",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "dummy-alpha",
+                "username": "tenant-user",
+                "password": "tenant-password-value",
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stored"] is True
+    assert body["domain"] == "dummy-alpha"
+    assert "tenant-password-value" not in response.text
+    assert fake.tenant_credentials["dummy-alpha"] == (
+        "tenant-user",
+        "tenant-password-value",
+    )
+    entries = app.state.activity.recent()
+    assert entries[0]["action"] == "tenant.credential.set"
+    assert "tenant-password-value" not in str(entries)

@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from app.endpoints import plugin_api, validate_name
+from app.k8s import SecretError
 from app.pulp import PulpError
 
 router = APIRouter()
@@ -14,6 +15,86 @@ templates = Jinja2Templates(directory="app/templates")
 ASSERTIONS = ("domain_isolation", "resource_creation", "resource_listing")
 _OTHER_DOMAIN = {"dummy-beta": "dummy-alpha"}
 _PAGE_CAP = 20
+_NO_TENANT_EVIDENCE = (
+    "no tenant credential is stored for this domain; isolation was NOT verified "
+    "as a tenant. Store one on the Tenants page, then re-run."
+)
+_TENANT_LOOKUP_FAILED = (
+    "tenant credential could not be read; isolation was NOT verified as a tenant."
+)
+
+
+def _response_denied(exc: PulpError) -> bool:
+    return exc.status_code in (401, 403, 404)
+
+
+async def _tenant_cross_read(tenant_client, other_domain: str, repository_href: str) -> dict:
+    """As the tenant, read the OTHER domain and assert the created href is absent.
+
+    A 403/404 from Pulp is itself proof the tenant cannot read the foreign
+    domain, so it counts as PASS rather than being swallowed as an error.
+    """
+    try:
+        hrefs, truncated = await _listing_hrefs(
+            tenant_client, other_domain, plugin_api(other_domain, "repositories/rpm/rpm/")
+        )
+    except PulpError as exc:
+        if _response_denied(exc):
+            return {
+                "name": "tenant_isolation",
+                "scope": "tenant",
+                "status": "PASS",
+                "evidence": f"as_tenant=true; foreign domain read denied ({exc.status_code})",
+            }
+        return {
+            "name": "tenant_isolation",
+            "scope": "tenant",
+            "status": "FAIL",
+            "evidence": f"as_tenant=true; {exc.safe_message}",
+        }
+    if truncated:
+        return {
+            "name": "tenant_isolation",
+            "scope": "tenant",
+            "status": "FAIL",
+            "evidence": "as_tenant=true; search truncated before all pages; leak cannot be excluded",
+        }
+    leaked = repository_href in hrefs
+    return {
+        "name": "tenant_isolation",
+        "scope": "tenant",
+        "status": "FAIL" if leaked else "PASS",
+        "evidence": f"as_tenant=true; foreign_domain_leak={leaked}",
+    }
+
+
+async def _tenant_own_read(tenant_client, domain: str, repository_href: str) -> dict:
+    """As the tenant, read its OWN domain and assert the created href is present."""
+    try:
+        hrefs, truncated = await _listing_hrefs(
+            tenant_client, domain, plugin_api(domain, "repositories/rpm/rpm/")
+        )
+    except PulpError as exc:
+        return {
+            "name": "tenant_own_listing",
+            "scope": "tenant",
+            "status": "FAIL",
+            "evidence": f"as_tenant=true; {exc.safe_message}",
+        }
+    if truncated:
+        return {
+            "name": "tenant_own_listing",
+            "scope": "tenant",
+            "status": "FAIL",
+            "evidence": "as_tenant=true; search truncated before all pages; listing cannot be confirmed",
+        }
+    found = repository_href in hrefs
+    return {
+        "name": "tenant_own_listing",
+        "scope": "tenant",
+        "status": "PASS" if found else "FAIL",
+        "evidence": f"as_tenant=true; listed={found}",
+    }
 
 
 async def _listing_hrefs(client, domain: str, path: str) -> tuple[list[str], bool]:
@@ -44,7 +125,9 @@ async def _listing_hrefs(client, domain: str, path: str) -> tuple[list[str], boo
     return hrefs, True
 
 
-async def run_validation(client, domain: str, runs, correlation_id: str) -> dict:
+async def run_validation(
+    client, domain: str, runs, correlation_id: str, secrets, tenant_client_factory
+) -> dict:
     domain = validate_name("domain", domain)
     run_id = uuid4().hex[:12]
     runs.create(run_id)
@@ -136,11 +219,63 @@ async def run_validation(client, domain: str, runs, correlation_id: str) -> dict
                 "evidence": exc.safe_message,
             }
 
+    # Tenant-scoped phase: only runs when a real non-superuser credential exists.
+    # Authenticating as the tenant is the only way to prove confinement; without a
+    # stored credential the result says so rather than passing off the admin check
+    # as isolation. A credential read failure must not 500 the whole run.
+    tenant_assertions: list[dict] = []
+    try:
+        credential = await secrets.get_tenant_credential(
+            domain, correlation_id=correlation_id
+        )
+    except SecretError:
+        credential = None
+        tenant_assertions = [
+            {
+                "name": "tenant_isolation",
+                "scope": "tenant",
+                "status": "FAIL",
+                "evidence": _TENANT_LOOKUP_FAILED,
+            }
+        ]
+    if credential is not None:
+        tenant_client = tenant_client_factory(credential)
+        try:
+            tenant_assertions = [
+                await _tenant_cross_read(tenant_client, other_domain, repository_href)
+                if repository_href
+                else {
+                    "name": "tenant_isolation",
+                    "scope": "tenant",
+                    "status": "FAIL",
+                    "evidence": "as_tenant=true; resource was not created, tenant isolation could not be verified",
+                },
+                await _tenant_own_read(tenant_client, domain, repository_href)
+                if repository_href
+                else {
+                    "name": "tenant_own_listing",
+                    "scope": "tenant",
+                    "status": "FAIL",
+                    "evidence": "as_tenant=true; resource was not created, tenant listing could not be verified",
+                },
+            ]
+        finally:
+            await tenant_client.aclose()
+    elif not tenant_assertions:
+        tenant_assertions = [
+            {
+                "name": "tenant_isolation",
+                "scope": "tenant",
+                "status": "FAIL",
+                "evidence": _NO_TENANT_EVIDENCE,
+            }
+        ]
+
     return {
         "run_id": run_id,
         "domain": domain,
         "correlation_id": correlation_id,
-        "assertions": [isolation, creation, listing_assertion],
+        "assertions": [isolation, creation, listing_assertion, *tenant_assertions],
         "resources": runs.resources(run_id),
     }
 
@@ -177,15 +312,23 @@ async def validation_page(request: Request) -> HTMLResponse:
 async def validation_run(request: Request, payload: dict = Body(...)) -> JSONResponse:
     app = request.app
     client = app.state.client_factory()
+    secrets = app.state.secrets_factory()
     correlation_id = app.state.correlations.new()
     try:
         body = await run_validation(
-            client, payload.get("domain", "default"), app.state.runs, correlation_id
+            client,
+            payload.get("domain", "default"),
+            app.state.runs,
+            correlation_id,
+            secrets,
+            app.state.tenant_client_factory,
         )
     except ValueError as exc:
         await client.aclose()
+        await secrets.aclose()
         return JSONResponse({"error": str(exc)}, status_code=400)
     await client.aclose()
+    await secrets.aclose()
     app.state.activity.record(
         {
             "correlation_id": correlation_id,

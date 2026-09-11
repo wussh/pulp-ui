@@ -74,4 +74,28 @@ document.getElementById("tenant-setup").addEventListener("submit", function (eve
 });
 </script>
 
+<h3>Tenant credential</h3>
+<p class="subtitle">
+  Stores a real non-superuser credential for a domain so Validation can prove
+  isolation as that tenant. The password is written to the cluster Secret
+  <code>pulp-tenant-credentials</code> and never shown again.
+</p>
+<form id="tenant-credential">
+  <label>Domain <input name="domain" required></label>
+  <label>Username <input name="username" required></label>
+  <label>Password <input name="password" type="password" required></label>
+  <button type="submit">Store credential</button>
+</form>
+<div id="credential-output"></div>
+<script>
+document.getElementById("tenant-credential").addEventListener("submit", function (event) {
+  event.preventDefault();
+  var payload = Object.fromEntries(new FormData(event.target).entries());
+  window.pulpOps.postJSON("/ui/api/tenants/credential", payload).then(function (body) {
+    document.getElementById("credential-output").textContent = body.stored
+      ? "stored for domain " + body.domain
+      : "error=" + (body.error || "unknown");
+  });
+});
+</script>
 {% endblock %}

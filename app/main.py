@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings
+from app.k8s import SecretsStore
 from app.logging_config import configure_logging
 from app.middleware import BasicAuthMiddleware, CsrfMiddleware
 from app.routes import (
@@ -22,7 +23,12 @@ configure_logging()
 STATIC_DIR = "app/static"
 
 
-def create_app(settings: Settings, client_factory=None) -> FastAPI:
+def create_app(
+    settings: Settings,
+    client_factory=None,
+    secrets_factory=None,
+    tenant_client_factory=None,
+) -> FastAPI:
     configure_logging()
 
     def build_client():
@@ -39,6 +45,20 @@ def create_app(settings: Settings, client_factory=None) -> FastAPI:
     app.state.correlations = CorrelationStore()
     app.state.activity = ActivityStore()
     app.state.runs = RunStore()
+    # Cluster Secret access is per-request, mirroring client_factory: each route
+    # constructs one and closes it on every path. Tests inject secrets_factory.
+    def build_secrets():
+        return SecretsStore(settings)
+
+    app.state.secrets_factory = secrets_factory or build_secrets
+
+    def build_tenant_client(credentials):
+        # A second Pulp client authenticated as the tenant rather than the admin.
+        from app.pulp import PulpClient
+
+        return PulpClient(settings, credentials=credentials)
+
+    app.state.tenant_client_factory = tenant_client_factory or build_tenant_client
 
     app.add_middleware(CsrfMiddleware)
     app.add_middleware(BasicAuthMiddleware)

@@ -66,13 +66,25 @@ class PulpError(Exception):
         self.correlation_id = correlation_id
 
 
+def _basic_header(username: str, password: str) -> str:
+    token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    return f"Basic {token}"
+
+
 class PulpClient:
-    def __init__(self, settings: Settings) -> None:
-        token = base64.b64encode(
-            f"{settings.pulp_admin_user}:{settings.pulp_admin_password}".encode("utf-8")
-        ).decode("ascii")
+    def __init__(self, settings: Settings, credentials: tuple[str, str] | None = None) -> None:
+        """A Pulp API client.
+
+        `credentials` overrides the configured admin credential with an explicit
+        (username, password) pair — used to authenticate as a real tenant for the
+        isolation check. The default (None) keeps the original admin behaviour.
+        """
+        username, password = credentials or (
+            settings.pulp_admin_user,
+            settings.pulp_admin_password,
+        )
         self._settings = settings
-        self._headers = {"Authorization": f"Basic {token}"}
+        self._headers = {"Authorization": _basic_header(username, password)}
         self._client = httpx.AsyncClient(
             base_url=settings.pulp_internal_url,
             headers=self._headers,

@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from app.endpoints import global_api, plugin_api, validate_name
+from app.k8s import SecretError
 from app.pulp import PulpError
 
 router = APIRouter()
@@ -451,6 +452,54 @@ async def tenant_roles(request: Request) -> JSONResponse:
         )
     await client.aclose()
     return JSONResponse(body)
+
+
+@router.post("/api/tenants/credential")
+async def tenant_credential_set(
+    request: Request, payload: dict = Body(...)
+) -> JSONResponse:
+    """Store a tenant's Pulp credential in the cluster Secret.
+
+    The password is written to Kubernetes and never echoed, logged, or placed in an
+    activity record. The response says only that it was stored, and for which domain.
+    """
+    app = request.app
+    secrets = app.state.secrets_factory()
+    correlation_id = app.state.correlations.new()
+    try:
+        domain = validate_name("domain", payload.get("domain", ""))
+        username = validate_name("username", payload.get("username", ""))
+        password = payload.get("password")
+        if not isinstance(password, str) or not password:
+            raise ValueError("password is required")
+        if len(password) > 512:
+            raise ValueError("password is too long")
+        await secrets.set_tenant_credential(
+            domain, username, password, correlation_id=correlation_id
+        )
+    except ValueError as exc:
+        await secrets.aclose()
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except SecretError as exc:
+        await secrets.aclose()
+        return JSONResponse(
+            {"error": exc.safe_message, "correlation_id": exc.correlation_id or correlation_id},
+            status_code=502,
+        )
+    await secrets.aclose()
+    app.state.activity.record(
+        {
+            "correlation_id": correlation_id,
+            "operator": getattr(request.state, "username", None) or "operator",
+            "action": "tenant.credential.set",
+            "target": domain,
+            "target_type": "domain",
+            "result": "completed",
+        }
+    )
+    return JSONResponse(
+        {"stored": True, "domain": domain, "correlation_id": correlation_id}
+    )
 
 
 @router.post("/api/tenants/plan")

@@ -17,6 +17,14 @@ REQUIRED_ENV = {
     "PULP_S3_BUCKET_NAME": "pulp-content",
     "PULP_S3_REGION": "us-east-1",
     "PULP_S3_ENDPOINT": "http://rustfs-svc.rustfs.svc:9000",
+    # Kubernetes API access. Tests override the endpoints via secrets_factory; these
+    # keep load_settings() able to build a Settings for the app under test.
+    "K8S_API_URL": "https://kubernetes.default.svc",
+    "K8S_TOKEN_PATH": "/nonexistent/k8s-token",
+    "K8S_CA_PATH": "/nonexistent/k8s-ca.crt",
+    "K8S_NAMESPACE_PATH": "/nonexistent/k8s-namespace",
+    "K8S_NAMESPACE": "pulp",
+    "K8S_PROD_NAMESPACE": "prod",
 }
 
 
@@ -43,3 +51,17 @@ def settings(monkeypatch):
     for key, value in REQUIRED_ENV.items():
         monkeypatch.setenv(key, value)
     return load_settings()
+
+
+@pytest.fixture(autouse=True)
+def in_memory_secrets(monkeypatch):
+    """Never let a test open a real Kubernetes client.
+
+    Routes build their client via app.state.secrets_factory, so patching the class
+    create_app uses is enough. A test that needs to inspect applied Secrets passes
+    its own `secrets_factory=<FakeSecretsStore>`.
+    """
+    from app import main as app_main
+    from tests.helpers import FakeSecretsStore
+
+    monkeypatch.setattr(app_main, "SecretsStore", lambda settings: FakeSecretsStore())

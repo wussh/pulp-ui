@@ -567,18 +567,36 @@ def test_link_rejects_publication_from_other_domain(settings):
 PULL_THROUGH_BASE = "/pulp/default/api/v3"
 
 
-def _pull_through_handler(remotes, repos, dists):
+def _pull_through_handler(remotes, dists, seen=None):
     def handler(request):
         path = request.url.path
+        if seen is not None:
+            seen.append(path)
         if path == PULL_THROUGH_BASE + "/remotes/container/pull-through/":
             return httpx.Response(200, json={"count": len(remotes), "results": remotes})
-        if path == PULL_THROUGH_BASE + "/repositories/container/pull-through/":
-            return httpx.Response(200, json={"count": len(repos), "results": repos})
         if path == PULL_THROUGH_BASE + "/distributions/container/pull-through/":
             return httpx.Response(200, json={"count": len(dists), "results": dists})
         return httpx.Response(404, json={"detail": "Not found."})
 
     return handler
+
+
+def test_pull_through_status_uses_only_two_collections(settings):
+    # Live tbs-dev: /repositories/container/pull-through/ 404s. A pull-through
+    # distribution binds the remote directly, so the UI must never call it.
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        test_client.get("/ui/api/container/status?domain=default")
+    assert seen == [
+        PULL_THROUGH_BASE + "/remotes/container/pull-through/",
+        PULL_THROUGH_BASE + "/distributions/container/pull-through/",
+    ]
 
 
 def test_pull_through_status_joins_distribution_to_remote(settings):
@@ -590,26 +608,19 @@ def test_pull_through_status_joins_distribution_to_remote(settings):
             "upstream_name": "ghcr",
         }
     ]
-    repos = [
-        {
-            "name": "ghcr",
-            "pulp_href": "/pulp/default/api/v3/repositories/container/pull-through/p1/",
-            "remote": remotes[0]["pulp_href"],
-        }
-    ]
     dists = [
         {
             "name": "ghcr",
             "pulp_href": "/pulp/default/api/v3/distributions/container/pull-through/d1/",
             "base_path": "ghcr",
-            "repository": repos[0]["pulp_href"],
+            "remote": remotes[0]["pulp_href"],
         }
     ]
 
     app = create_app(
         settings,
         client_factory=lambda: make_client(
-            settings, _pull_through_handler(remotes, repos, dists)
+            settings, _pull_through_handler(remotes, dists)
         ),
     )
     with authed_client(app) as test_client:
@@ -627,20 +638,18 @@ def test_pull_through_status_joins_distribution_to_remote(settings):
     ]
 
 
-def test_pull_through_status_reports_distribution_without_repository(settings):
+def test_pull_through_status_reports_distribution_without_remote(settings):
     dists = [
         {
             "name": "orphan",
             "pulp_href": "/pulp/default/api/v3/distributions/container/pull-through/d1/",
             "base_path": "orphan",
-            "repository": None,
+            "remote": None,
         }
     ]
     app = create_app(
         settings,
-        client_factory=lambda: make_client(
-            settings, _pull_through_handler([], [], dists)
-        ),
+        client_factory=lambda: make_client(settings, _pull_through_handler([], dists)),
     )
     with authed_client(app) as test_client:
         rows = test_client.get("/ui/api/container/status?domain=default").json()["rows"]
@@ -650,26 +659,17 @@ def test_pull_through_status_reports_distribution_without_repository(settings):
 
 
 def test_pull_through_status_reports_unresolvable_remote(settings):
-    repos = [
-        {
-            "name": "ghcr",
-            "pulp_href": "/pulp/default/api/v3/repositories/container/pull-through/p1/",
-            "remote": "/pulp/default/api/v3/remotes/container/pull-through/gone/",
-        }
-    ]
     dists = [
         {
             "name": "ghcr",
             "pulp_href": "/pulp/default/api/v3/distributions/container/pull-through/d1/",
             "base_path": "ghcr",
-            "repository": repos[0]["pulp_href"],
+            "remote": "/pulp/default/api/v3/remotes/container/pull-through/gone/",
         }
     ]
     app = create_app(
         settings,
-        client_factory=lambda: make_client(
-            settings, _pull_through_handler([], repos, dists)
-        ),
+        client_factory=lambda: make_client(settings, _pull_through_handler([], dists)),
     )
     with authed_client(app) as test_client:
         rows = test_client.get("/ui/api/container/status?domain=default").json()["rows"]
@@ -678,7 +678,7 @@ def test_pull_through_status_reports_unresolvable_remote(settings):
     assert rows[0]["upstream_url"] == ""
 
 
-def test_pull_through_add_creates_remote_repo_distribution_in_order(settings):
+def test_pull_through_add_creates_remote_then_distribution(settings):
     import json
 
     seen = []
@@ -704,12 +704,14 @@ def test_pull_through_add_creates_remote_repo_distribution_in_order(settings):
     assert response.status_code == 200
     assert [call[1] for call in seen] == [
         PULL_THROUGH_BASE + "/remotes/container/pull-through/",
-        PULL_THROUGH_BASE + "/repositories/container/pull-through/",
         PULL_THROUGH_BASE + "/distributions/container/pull-through/",
     ]
-    assert seen[2][2]["repository"] == (
-        PULL_THROUGH_BASE + "/repositories/container/pull-through/1/"
+    # The distribution carries the remote href directly; no repository field.
+    dist_body = seen[1][2]
+    assert dist_body["remote"] == (
+        PULL_THROUGH_BASE + "/remotes/container/pull-through/1/"
     )
+    assert dist_body["base_path"] == "ghcr"
     assert response.json()["task_href"] == "/pulp/default/api/v3/tasks/d1/"
 
 
@@ -718,7 +720,7 @@ def test_pull_through_add_stops_on_first_failure(settings):
 
     def handler(request):
         seen.append(request.url.path)
-        if "/repositories/" in request.url.path:
+        if "/distributions/" in request.url.path:
             return httpx.Response(400, json={"name": ["This field must be unique."]})
         return httpx.Response(201, json={"pulp_href": request.url.path + "1/"})
 
@@ -737,10 +739,12 @@ def test_pull_through_add_stops_on_first_failure(settings):
     assert response.status_code == 400
     body = response.json()
     assert body["failed"] is True
-    assert body["completed"][0]["resource"] == "remote"
+    assert body["completed"] == [
+        {"resource": "remote", "pulp_href": PULL_THROUGH_BASE + "/remotes/container/pull-through/1/"}
+    ]
     assert seen == [
         PULL_THROUGH_BASE + "/remotes/container/pull-through/",
-        PULL_THROUGH_BASE + "/repositories/container/pull-through/",
+        PULL_THROUGH_BASE + "/distributions/container/pull-through/",
     ]
 
 

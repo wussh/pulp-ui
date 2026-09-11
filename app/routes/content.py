@@ -21,8 +21,6 @@ from app.safety import validate_source_url
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
-_CONTAINER = "container"
-
 
 def _record_id(href: str) -> str:
     return href.rstrip("/").split("/")[-1]
@@ -269,27 +267,14 @@ async def link_publication(client, payload: dict, correlation_id: str) -> dict:
     return {"task_href": result.get("task", "")}
 
 
-def _pull_through_rows(remotes: list, repos: list, dists: list) -> list[dict]:
-    by_href = {item.get("pulp_href"): item for item in repos}
+def _pull_through_rows(remotes: list, dists: list) -> list[dict]:
     remote_by_href = {item.get("pulp_href"): item for item in remotes}
     rows: list[dict] = []
     for dist in dists:
-        repo = by_href.get(dist.get("repository"))
-        if repo is None:
-            # Report the broken link instead of dropping the distribution: a silent
-            # omission hides a registry an operator may be relying on.
-            rows.append(
-                {
-                    "name": dist.get("name"),
-                    "base_path": dist.get("base_path"),
-                    "upstream_name": "",
-                    "upstream_url": "",
-                    "distribution_href": dist.get("pulp_href"),
-                    "note": "distribution is not linked to a pull-through repository",
-                }
-            )
-            continue
-        remote = remote_by_href.get(repo.get("remote"))
+        # A pull-through distribution binds the remote directly; there is no
+        # repository for pull-through. Report a null/unresolvable link instead of
+        # dropping the distribution: a silent omission hides a live registry.
+        remote = remote_by_href.get(dist.get("remote"))
         if remote is None:
             rows.append(
                 {
@@ -298,7 +283,7 @@ def _pull_through_rows(remotes: list, repos: list, dists: list) -> list[dict]:
                     "upstream_name": "",
                     "upstream_url": "",
                     "distribution_href": dist.get("pulp_href"),
-                    "note": "repository has no resolvable pull-through remote",
+                    "note": "distribution has no resolvable pull-through remote",
                 }
             )
             continue
@@ -318,13 +303,13 @@ def _pull_through_rows(remotes: list, repos: list, dists: list) -> list[dict]:
 async def list_pull_through(client, domain: str) -> dict:
     domain = validate_name("domain", domain)
     fetched: list[list] = []
-    for kind in ("remote", "repository", "distribution"):
+    for kind in ("remote", "distribution"):
         response = await client.request(
             "GET", plugin_api(domain, pull_through_path(kind))
         )
         fetched.append(response.get("results", []))
-    remotes, repos, dists = fetched
-    return {"domain": domain, "rows": _pull_through_rows(remotes, repos, dists)}
+    remotes, dists = fetched
+    return {"domain": domain, "rows": _pull_through_rows(remotes, dists)}
 
 
 async def add_pull_through_registry(
@@ -343,8 +328,6 @@ async def add_pull_through_registry(
         str(payload.get("upstream_url") or ""), settings.allowed_source_hosts
     )
     completed: list[dict] = []
-    remote: dict = {}
-    repo: dict = {}
     try:
         remote = await client.request(
             "POST",
@@ -353,20 +336,15 @@ async def add_pull_through_registry(
             correlation_id=correlation_id,
         )
         completed.append({"resource": "remote", "pulp_href": remote.get("pulp_href", "")})
-        repo = await client.request(
-            "POST",
-            plugin_api(domain, pull_through_path("repository")),
-            json_body={"name": name, "remote": remote.get("pulp_href", "")},
-            correlation_id=correlation_id,
-        )
-        completed.append({"resource": "repository", "pulp_href": repo.get("pulp_href", "")})
+        # Two-step create: pull-through has no repository, so the distribution
+        # carries both base_path and the remote href directly.
         dist = await client.request(
             "POST",
             plugin_api(domain, pull_through_path("distribution")),
             json_body={
                 "name": name,
                 "base_path": base_path,
-                "repository": repo.get("pulp_href", ""),
+                "remote": remote.get("pulp_href", ""),
             },
             correlation_id=correlation_id,
         )

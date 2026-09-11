@@ -87,10 +87,20 @@ def publication_path(plugin: str) -> str:
     return f"publications/{segment}/"
 
 
+# Pull-through has no repository: the distribution links the remote directly.
+# Verified live against tbs-dev Pulp: repositories/container/pull-through/ 404s
+# while the remotes and distributions collections return 200.
+_PULL_THROUGH_KINDS = {"remote": "remotes", "distribution": "distributions"}
+
+
 def pull_through_path(kind: str) -> str:
-    """Relative collection path for a container pull-through resource kind."""
+    """Relative collection path for a container pull-through resource kind.
+
+    Only `remote` and `distribution` exist — a pull-through distribution binds a
+    remote directly, with no intermediate repository.
+    """
     try:
-        collection = _KIND_COLLECTION[kind]
+        collection = _PULL_THROUGH_KINDS[kind]
     except KeyError:
         raise ValueError("unsupported pull-through resource kind") from None
     return f"{collection}/{PULL_THROUGH_SEGMENT}/"

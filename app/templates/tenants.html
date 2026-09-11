@@ -10,6 +10,7 @@
 
 <h3>Role assignments</h3>
 <form id="roles-form">
+  <label>Domain <input name="domain" value="default" required></label>
   <label>Group <input name="group" required></label>
   <button type="submit">Look up</button>
 </form>
@@ -17,10 +18,12 @@
 <script>
 document.getElementById("roles-form").addEventListener("submit", function (event) {
   event.preventDefault();
-  var group = new FormData(event.target).get("group");
-  fetch("/ui/api/tenants/roles?group=" + encodeURIComponent(group), {
-    credentials: "same-origin"
-  })
+  var data = new FormData(event.target);
+  fetch(
+    "/ui/api/tenants/roles?domain=" + encodeURIComponent(data.get("domain")) +
+    "&group=" + encodeURIComponent(data.get("group")),
+    { credentials: "same-origin" }
+  )
     .then(function (response) { return response.json(); })
     .then(function (body) {
       document.getElementById("roles-output").textContent = JSON.stringify(body, null, 2);

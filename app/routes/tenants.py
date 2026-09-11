@@ -2,7 +2,7 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from app.endpoints import global_api, validate_name
+from app.endpoints import global_api, plugin_api, validate_name
 from app.pulp import PulpError
 
 router = APIRouter()
@@ -173,13 +173,18 @@ async def _assign_domain_role(
     return last
 
 
-async def list_role_assignments(client, group: str) -> dict:
+async def list_role_assignments(client, domain: str, group: str) -> dict:
+    domain = validate_name("domain", domain)
     group = validate_name("group", group)
-    record = await _first_match(client, "/pulp/default/api/v3/groups/", "name", group)
+    record = await _first_match(
+        client, plugin_api(domain, "groups/"), "name", group
+    )
     if not record:
         raise ValueError("group not found")
+    # Listing a group's roles is domain-scoped; the flat /pulp/api/v3 shape 404s.
+    # Only the POST that assigns a role uses the global path (with domain in body).
     listing = await client.request(
-        "GET", global_api(f"groups/{_record_id(record['pulp_href'])}/roles/")
+        "GET", plugin_api(domain, f"groups/{_record_id(record['pulp_href'])}/roles/")
     )
     return {
         "group": group,
@@ -317,7 +322,9 @@ async def tenant_roles(request: Request) -> JSONResponse:
     client = request.app.state.client_factory()
     try:
         body = await list_role_assignments(
-            client, request.query_params.get("group", "")
+            client,
+            request.query_params.get("domain", "default"),
+            request.query_params.get("group", ""),
         )
     except ValueError as exc:
         await client.aclose()

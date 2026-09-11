@@ -302,8 +302,13 @@ def test_plan_preview_reports_role_assignment_count(settings):
     assert role_step["roles"] == len(EXPECTED_ROLES)
 
 
-def test_roles_listing_returns_assignments(settings):
+def test_roles_listing_uses_domain_scoped_path(settings):
+    # Live tbs-dev: /pulp/api/v3/groups/3/roles/ 404s; only the domain-scoped
+    # /pulp/default/api/v3/groups/3/roles/ returns the assignments.
+    seen = []
+
     def handler(request):
+        seen.append(request.url.path)
         if request.url.path == "/pulp/default/api/v3/groups/":
             return httpx.Response(
                 200,
@@ -333,8 +338,14 @@ def test_roles_listing_returns_assignments(settings):
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
     with authed_client(app) as test_client:
-        response = test_client.get("/ui/api/tenants/roles?group=dummy-alpha-users")
+        response = test_client.get(
+            "/ui/api/tenants/roles?domain=default&group=dummy-alpha-users"
+        )
     assert response.status_code == 200
+    assert seen == [
+        "/pulp/default/api/v3/groups/",
+        "/pulp/default/api/v3/groups/7/roles/",
+    ]
     assert response.json()["assignments"] == [
         {
             "role": "rpm.rpmrepository_creator",
@@ -350,5 +361,24 @@ def test_roles_listing_rejects_unknown_group(settings):
 
     app = create_app(settings, client_factory=lambda: make_client(settings, handler))
     with authed_client(app) as test_client:
-        response = test_client.get("/ui/api/tenants/roles?group=missing")
+        response = test_client.get(
+            "/ui/api/tenants/roles?domain=default&group=missing"
+        )
     assert response.status_code == 400
+
+
+def test_roles_listing_rejects_foreign_domain(settings):
+    # A traversal-shaped domain must be a clean 400, never a 500.
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.get(
+            "/ui/api/tenants/roles?domain=../admin&group=dummy-alpha-users"
+        )
+    assert response.status_code == 400
+    assert calls == []

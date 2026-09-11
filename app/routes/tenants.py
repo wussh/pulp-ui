@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
@@ -86,10 +88,58 @@ async def list_tenants(client) -> dict:
     }
 
 
+# Copied verbatim from scripts/pulp/pulp-domains-setup.py; the Domains API requires
+# storage_class and storage_settings, and does not default them from the CR.
+DOMAIN_STORAGE_CLASS = "storages.backends.s3boto3.S3Boto3Storage"
+DOMAIN_ADDRESSING_STYLE = "path"
+
+
+def domain_storage_settings(settings, bucket_override: str | None) -> dict:
+    """The storage_settings body shape from pulp-domains-setup.py.
+
+    The S3 values come from Settings (mounted server-side); only `bucket_name` is
+    per-domain and may be overridden by the operator. Never returned to the browser.
+    """
+    return {
+        "endpoint_url": settings.pulp_s3_endpoint,
+        "bucket_name": bucket_override or settings.pulp_s3_bucket_name,
+        "addressing_style": DOMAIN_ADDRESSING_STYLE,
+        "access_key": settings.pulp_s3_access_key_id,
+        "secret_key": settings.pulp_s3_secret_access_key,
+    }
+
+
+def _optional_bucket(payload: dict) -> str:
+    raw = payload.get("bucket_name")
+    if raw is None or raw == "":
+        return ""
+    if not isinstance(raw, str):
+        raise ValueError("bucket_name must be a string")
+    # Bucket names are S3 identifiers, not Pulp names: lowercase letters, digits,
+    # dot, hyphen. Validated here so a bad value cannot reach the storage backend.
+    value = raw.strip()
+    if not re.match(r"^[a-z0-9][a-z0-9.-]{0,62}$", value):
+        raise ValueError("bucket_name must be 1-63 lowercase letters, digits, dot, or hyphen")
+    return value
+
+
+def _optional_description(payload: dict) -> str:
+    raw = payload.get("description")
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise ValueError("description must be a string")
+    return raw.strip()[:200]
+
+
 async def plan_setup(client, payload: dict) -> dict:
     domain = validate_name("domain", payload.get("domain", ""))
     username = validate_name("username", payload.get("username", ""))
     group = validate_name("group", payload.get("group", ""))
+    # Per-domain, non-secret inputs. The S3 credentials are never placed in the plan:
+    # plan is returned to the browser verbatim.
+    _optional_description(payload)
+    _optional_bucket(payload)
 
     probe_warnings: list[str] = []
 
@@ -143,10 +193,16 @@ async def plan_setup(client, payload: dict) -> dict:
         }
     )
 
+    bucket = _optional_bucket(payload)
     return {
         "domain": domain,
         "username": username,
         "group": group,
+        "domain_description": _optional_description(payload),
+        # Non-secret flags carried on the plan for the apply step. The S3 values
+        # themselves stay in Settings and never enter the plan or any response.
+        "domain_use_custom_storage": True,
+        "domain_bucket": bucket,
         "steps": steps,
         "probe_warnings": probe_warnings,
         "preview": {
@@ -240,7 +296,7 @@ async def list_role_assignments(client, domain: str, group: str) -> dict:
     }
 
 
-async def apply_setup(client, plan: dict, correlation_id: str) -> dict:
+async def apply_setup(client, plan: dict, correlation_id: str, settings) -> dict:
     completed: list[dict] = []
     domain_record: dict | None = None
     group_record: dict | None = None
@@ -250,10 +306,22 @@ async def apply_setup(client, plan: dict, correlation_id: str) -> dict:
             continue
         try:
             if step["resource"] == "domain":
+                # storage_class/storage_settings mirror pulp-domains-setup.py. The
+                # S3 fields are read from Settings; the operator supplies only the
+                # name, optional description, and optional bucket override, all
+                # carried on the plan as non-secret values.
+                body: dict = {"name": plan["domain"]}
+                if plan.get("domain_description"):
+                    body["description"] = plan["domain_description"]
+                if plan.get("domain_use_custom_storage"):
+                    body["storage_class"] = DOMAIN_STORAGE_CLASS
+                    body["storage_settings"] = domain_storage_settings(
+                        settings, plan.get("domain_bucket") or None
+                    )
                 domain_record = await client.request(
                     "POST",
                     "/pulp/default/api/v3/domains/",
-                    json_body={"name": plan["domain"]},
+                    json_body=body,
                     correlation_id=correlation_id,
                 )
                 created = domain_record
@@ -410,7 +478,7 @@ async def tenants_apply(request: Request, payload: dict = Body(...)) -> JSONResp
     correlation_id = app.state.correlations.new()
     try:
         plan = await plan_setup(client, payload)
-        result = await apply_setup(client, plan, correlation_id)
+        result = await apply_setup(client, plan, correlation_id, app.state.settings)
     except ValueError as exc:
         await client.aclose()
         return JSONResponse({"error": str(exc)}, status_code=400)

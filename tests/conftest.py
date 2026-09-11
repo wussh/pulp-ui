@@ -11,6 +11,12 @@ REQUIRED_ENV = {
     "ALLOWED_SOURCE_HOSTS": "mirror.example.com",
     "REQUEST_TIMEOUT_SECONDS": "10",
     "MAX_RESPONSE_BYTES": "1048576",
+    # S3 credentials (Secret pulp-s3-credentials), read server-side only.
+    "PULP_S3_ACCESS_KEY_ID": "test-access-key-id",
+    "PULP_S3_SECRET_ACCESS_KEY": "test-secret-access-key",
+    "PULP_S3_BUCKET_NAME": "pulp-content",
+    "PULP_S3_REGION": "us-east-1",
+    "PULP_S3_ENDPOINT": "http://rustfs-svc.rustfs.svc:9000",
 }
 
 

@@ -474,3 +474,123 @@ def test_apply_creates_all_roles_and_returns_every_task_href(settings):
     for post in posts:
         assert post["content_object"] is None
         assert post["domain"] == "/pulp/default/api/v3/domains/1/"
+
+
+# --- Feature A: create a domain with custom storage --------------------------
+
+
+def test_apply_domain_body_carries_storage_class_and_settings(settings):
+    import json
+
+    domain_posts = []
+
+    def handler(request):
+        if request.method == "POST" and request.url.path == "/pulp/default/api/v3/domains/":
+            domain_posts.append(json.loads(request.content))
+            return httpx.Response(
+                201, json={"pulp_href": "/pulp/default/api/v3/domains/1/"}
+            )
+        if request.method == "GET":
+            return httpx.Response(200, json={"count": 0, "results": []})
+        return httpx.Response(201, json={"pulp_href": request.url.path + "1/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/tenants/apply",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "dummy-alpha",
+                "username": "budi-test",
+                "group": "dummy-alpha-users",
+                "description": "Tenant alpha",
+                "bucket_name": "alpha-content",
+            },
+        )
+    assert response.status_code == 200
+    assert len(domain_posts) == 1
+    body = domain_posts[0]
+    assert body["name"] == "dummy-alpha"
+    assert body["description"] == "Tenant alpha"
+    assert body["storage_class"] == "storages.backends.s3boto3.S3Boto3Storage"
+    settings_body = body["storage_settings"]
+    assert settings_body["bucket_name"] == "alpha-content"
+    assert settings_body["endpoint_url"] == settings.pulp_s3_endpoint
+    assert settings_body["access_key"] == settings.pulp_s3_access_key_id
+    assert settings_body["secret_key"] == settings.pulp_s3_secret_access_key
+    assert settings_body["addressing_style"] == "path"
+
+
+def test_domain_without_override_uses_the_settings_default_bucket(settings):
+    import json
+
+    domain_posts = []
+
+    def handler(request):
+        if request.method == "POST" and request.url.path == "/pulp/default/api/v3/domains/":
+            domain_posts.append(json.loads(request.content))
+            return httpx.Response(
+                201, json={"pulp_href": "/pulp/default/api/v3/domains/1/"}
+            )
+        if request.method == "GET":
+            return httpx.Response(200, json={"count": 0, "results": []})
+        return httpx.Response(201, json={"pulp_href": request.url.path + "1/"})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        test_client.post(
+            "/ui/api/tenants/apply",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "dummy-alpha",
+                "username": "budi-test",
+                "group": "dummy-alpha-users",
+            },
+        )
+    assert domain_posts[0]["storage_settings"]["bucket_name"] == settings.pulp_s3_bucket_name
+
+
+def test_domain_response_contains_no_s3_secret(settings):
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"count": 0, "results": []})
+        return httpx.Response(
+            201, json={"name": "dummy-alpha", "pulp_href": "/pulp/default/api/v3/domains/1/"}
+        )
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/tenants/apply",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "dummy-alpha",
+                "username": "budi-test",
+                "group": "dummy-alpha-users",
+            },
+        )
+    assert settings.pulp_s3_secret_access_key not in response.text
+    assert settings.pulp_s3_access_key_id not in response.text
+
+
+def test_apply_rejects_invalid_bucket_name(settings):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with authed_client(app) as test_client:
+        response = test_client.post(
+            "/ui/api/tenants/apply",
+            headers=csrf_headers(test_client),
+            json={
+                "domain": "dummy-alpha",
+                "username": "budi-test",
+                "group": "dummy-alpha-users",
+                "bucket_name": "Bad_Bucket",
+            },
+        )
+    assert response.status_code == 400
+    assert calls == []

@@ -36,6 +36,8 @@ document.getElementById("roles-form").addEventListener("submit", function (event
   <label>Domain <input name="domain" required></label>
   <label>Username <input name="username" required></label>
   <label>Group <input name="group" required></label>
+  <label>Description <input name="description"></label>
+  <label>Bucket override <input name="bucket_name" placeholder="default bucket"></label>
   <button type="button" id="plan-button">Preview</button>
   <ul id="probe-warnings"></ul>
   <div id="plan-output"></div>
@@ -71,4 +73,5 @@ document.getElementById("tenant-setup").addEventListener("submit", function (eve
   });
 });
 </script>
+
 {% endblock %}

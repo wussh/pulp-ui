@@ -127,6 +127,66 @@ async def test_traversal_path_is_rejected_without_dispatch(settings):
     await client.aclose()
 
 
+async def test_percent_encoded_dot_traversal_is_rejected(settings):
+    called = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    client = build_client(settings, handler)
+    bad_paths = (
+        "/pulp/%2e%2e/admin/api/v3/users/",
+        "/pulp/%2E%2E/admin/api/v3/users/",
+        "/pulp/default/api/v3/%2e%2e/%2e%2e/admin/",
+    )
+    for bad in bad_paths:
+        with pytest.raises(ValueError):
+            await client.request("GET", bad)
+    assert called == []
+    await client.aclose()
+
+
+async def test_percent_encoded_slash_traversal_is_rejected(settings):
+    called = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    client = build_client(settings, handler)
+    bad_paths = (
+        "/pulp/..%2fadmin/api/v3/users/",
+        "/pulp/%2e%2e%2fadmin/api/v3/users/",
+        "/pulp/%2E%2Fadmin/api/v3/users/",
+    )
+    for bad in bad_paths:
+        with pytest.raises(ValueError):
+            await client.request("GET", bad)
+    assert called == []
+    await client.aclose()
+
+
+async def test_mixed_encoded_and_literal_traversal_is_rejected(settings):
+    called = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    client = build_client(settings, handler)
+    bad_paths = (
+        "/pulp/../%2e%2e/admin/",
+        "/pulp/%2e./admin/",
+        "/pulp/.%2e/admin/",
+    )
+    for bad in bad_paths:
+        with pytest.raises(ValueError):
+            await client.request("GET", bad)
+    assert called == []
+    await client.aclose()
+
+
 async def test_control_characters_are_rejected(settings):
     called = []
 

@@ -1,5 +1,6 @@
 import base64
 import json
+import posixpath
 import uuid
 
 import httpx
@@ -31,8 +32,20 @@ def _reject_unsafe_path(path: str) -> None:
         raise ValueError("absolute URLs are not permitted")
     if any(char in _CONTROL_CHARS for char in path):
         raise ValueError("path must not contain control characters")
+    lowered = path.lower()
+    if "%2e" in lowered or "%2f" in lowered:
+        raise ValueError("path must not contain encoded traversal characters")
     if any(segment in (".", "..") for segment in path.split("/")):
         raise ValueError("path must not contain traversal segments")
+
+
+def _reject_unsafe_resolved_path(resolved: httpx.URL) -> None:
+    decoded = resolved.path
+    normalized = posixpath.normpath(decoded)
+    if not normalized.startswith("/pulp/"):
+        raise ValueError("path must resolve inside the /pulp/ prefix")
+    if any(segment == ".." for segment in normalized.split("/")):
+        raise ValueError("path must not resolve to a traversal segment")
 
 
 class PulpError(Exception):
@@ -90,8 +103,7 @@ class PulpClient:
         correlation_id = correlation_id or uuid.uuid4().hex
         try:
             resolved = self._client.base_url.join(path)
-            if not resolved.path.startswith("/pulp/"):
-                raise ValueError("path must resolve inside the /pulp/ prefix")
+            _reject_unsafe_resolved_path(resolved)
             async with self._client.stream(
                 method,
                 path,

@@ -8,6 +8,31 @@ from app.config import Settings
 
 _ALLOWED_METHODS = frozenset({"GET", "POST", "PATCH", "PUT", "DELETE"})
 _SAFE_4XX_DETAIL_LIMIT = 400
+_SAFE_4XX_FIELDS = frozenset(
+    {
+        "name",
+        "username",
+        "group",
+        "domain",
+        "base_path",
+        "url",
+        "repository",
+        "remote",
+        "role",
+    }
+)
+_CONTROL_CHARS = frozenset(chr(code) for code in range(0x20)) | {"\x7f"}
+
+
+def _reject_unsafe_path(path: str) -> None:
+    if not path.startswith("/pulp/"):
+        raise ValueError("path must be an internal Pulp API path")
+    if "://" in path or path.startswith("//"):
+        raise ValueError("absolute URLs are not permitted")
+    if any(char in _CONTROL_CHARS for char in path):
+        raise ValueError("path must not contain control characters")
+    if any(segment in (".", "..") for segment in path.split("/")):
+        raise ValueError("path must not contain traversal segments")
 
 
 class PulpError(Exception):
@@ -60,13 +85,13 @@ class PulpClient:
         method = method.upper()
         if method not in _ALLOWED_METHODS:
             raise ValueError(f"unsupported method: {method}")
-        if not path.startswith("/pulp/"):
-            raise ValueError("path must be an internal Pulp API path")
-        if "://" in path or path.startswith("//"):
-            raise ValueError("absolute URLs are not permitted")
+        _reject_unsafe_path(path)
 
         correlation_id = correlation_id or uuid.uuid4().hex
         try:
+            resolved = self._client.base_url.join(path)
+            if not resolved.path.startswith("/pulp/"):
+                raise ValueError("path must resolve inside the /pulp/ prefix")
             async with self._client.stream(
                 method,
                 path,
@@ -87,9 +112,9 @@ class PulpClient:
                     chunks.append(chunk)
                 raw = b"".join(chunks)
                 status = response.status_code
-        except PulpError:
+        except (PulpError, ValueError):
             raise
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
             raise PulpError(
                 "Pulp API request failed.", correlation_id=correlation_id
             ) from exc
@@ -135,7 +160,10 @@ def _safe_4xx_message(raw: bytes) -> str:
         return "Pulp API rejected the request."
     if not isinstance(payload, dict):
         return "Pulp API rejected the request."
-    text = json.dumps(payload, ensure_ascii=False)
+    safe = {key: value for key, value in payload.items() if key in _SAFE_4XX_FIELDS}
+    if not safe:
+        return "Pulp API rejected the request."
+    text = json.dumps(safe, ensure_ascii=False)
     if len(text) > _SAFE_4XX_DETAIL_LIMIT:
         text = text[:_SAFE_4XX_DETAIL_LIMIT]
     return f"Pulp API rejected the request: {text}"

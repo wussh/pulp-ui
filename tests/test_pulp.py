@@ -111,3 +111,69 @@ async def test_timeout_maps_to_pulp_error(settings):
     with pytest.raises(PulpError):
         await client.request("GET", "/pulp/default/api/v3/status/")
     await client.aclose()
+
+
+async def test_traversal_path_is_rejected_without_dispatch(settings):
+    called = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    client = build_client(settings, handler)
+    with pytest.raises(ValueError):
+        await client.request("GET", "/pulp/../admin/api/v3/users/")
+    assert called == []
+    await client.aclose()
+
+
+async def test_control_characters_are_rejected(settings):
+    called = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    client = build_client(settings, handler)
+    for bad in ("/pulp/default/api/v3/status/\n", "/pulp/default/\r\nadmin/", "/pulp/a\x00b/"):
+        with pytest.raises(ValueError):
+            await client.request("GET", bad)
+    assert called == []
+    await client.aclose()
+
+
+async def test_4xx_does_not_echo_unknown_keys(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"password": ["hunter2-secret"], "name": ["This field is required."]},
+        )
+
+    client = build_client(settings, handler)
+    with pytest.raises(PulpError) as excinfo:
+        await client.request("POST", "/pulp/default/api/v3/users/", json_body={})
+    assert "hunter2-secret" not in excinfo.value.safe_message
+    assert "password" not in excinfo.value.safe_message
+    assert "This field is required." in excinfo.value.safe_message
+    await client.aclose()
+
+
+async def test_4xx_with_only_unknown_keys_is_generic(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"password": ["hunter2-secret"]})
+
+    client = build_client(settings, handler)
+    with pytest.raises(PulpError) as excinfo:
+        await client.request("POST", "/pulp/default/api/v3/users/", json_body={})
+    assert excinfo.value.safe_message == "Pulp API rejected the request."
+    await client.aclose()
+
+
+async def test_invalid_url_maps_to_pulp_error(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.InvalidURL("bad url")
+
+    client = build_client(settings, handler)
+    with pytest.raises(PulpError):
+        await client.request("GET", "/pulp/default/api/v3/status/")
+    await client.aclose()

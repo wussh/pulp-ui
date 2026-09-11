@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 
 class CorrelationStore:
@@ -12,7 +13,11 @@ class ActivityStore:
         self._entries: list[dict] = []
 
     def record(self, entry: dict) -> None:
-        self._entries.append(entry)
+        stamped = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **entry,
+        }
+        self._entries.append(stamped)
         if len(self._entries) > self._limit:
             del self._entries[: len(self._entries) - self._limit]
 

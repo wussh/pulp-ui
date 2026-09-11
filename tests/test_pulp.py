@@ -1,3 +1,5 @@
+import logging
+
 import httpx
 import pytest
 
@@ -227,6 +229,28 @@ async def test_4xx_with_only_unknown_keys_is_generic(settings):
         await client.request("POST", "/pulp/default/api/v3/users/", json_body={})
     assert excinfo.value.safe_message == "Pulp API rejected the request."
     await client.aclose()
+
+
+async def test_outgoing_request_is_logged_without_credentials(settings, caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"pulp_href": "/x/"})
+
+    client = build_client(settings, handler)
+    with caplog.at_level(logging.INFO, logger="app.pulp"):
+        await client.request(
+            "POST",
+            "/pulp/default/api/v3/users/",
+            json_body={"username": "operator", "password": "hunter2"},
+            correlation_id="corr-1",
+        )
+    await client.aclose()
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "hunter2" not in logged
+    assert "json_body" not in logged
+    assert "corr-1" in logged
+    assert "POST" in logged
+    assert "Basic " not in logged
+    assert "authorization" not in logged.lower()
 
 
 async def test_invalid_url_maps_to_pulp_error(settings):

@@ -100,4 +100,7 @@ def test_activity_recent_zero_is_empty():
     store.record({"id": 1})
     assert store.recent(0) == []
     assert store.recent(-5) == []
-    assert store.recent() == [{"id": 1}]
+    entries = store.recent()
+    assert len(entries) == 1
+    assert entries[0]["id"] == 1
+    assert "timestamp" in entries[0]

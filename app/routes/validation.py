@@ -152,9 +152,10 @@ async def validation_run(request: Request, payload: dict = Body(...)) -> JSONRes
     app.state.activity.record(
         {
             "correlation_id": correlation_id,
-            "operator": "operator",
+            "operator": getattr(request.state, "username", None) or "operator",
             "action": "validation.run",
             "target": body["run_id"],
+            "target_type": "run",
             "result": "completed",
         }
     )
@@ -177,9 +178,10 @@ async def validation_cleanup(
         app.state.activity.record(
             {
                 "correlation_id": correlation_id,
-                "operator": "operator",
+                "operator": getattr(request.state, "username", None) or "operator",
                 "action": "validation.cleanup",
                 "target": payload.get("run_id", ""),
+                "target_type": "run",
                 "result": "failed",
             }
         )
@@ -188,9 +190,10 @@ async def validation_cleanup(
     app.state.activity.record(
         {
             "correlation_id": correlation_id,
-            "operator": "operator",
+            "operator": getattr(request.state, "username", None) or "operator",
             "action": "validation.cleanup",
             "target": payload.get("run_id", ""),
+            "target_type": "run",
             "result": "completed",
         }
     )

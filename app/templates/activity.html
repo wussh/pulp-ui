@@ -3,12 +3,15 @@
 <h2>Activity</h2>
 <p class="subtitle">In-process only. Entries disappear when the pod restarts.</p>
 <table>
-  <thead><tr><th>Action</th><th>Target</th><th>Result</th><th>Correlation</th></tr></thead>
+  <thead><tr><th>Timestamp</th><th>Operator</th><th>Action</th><th>Target</th><th>Type</th><th>Result</th><th>Correlation</th></tr></thead>
   <tbody>
   {% for entry in entries %}
     <tr>
+      <td>{{ entry.timestamp }}</td>
+      <td>{{ entry.operator }}</td>
       <td>{{ entry.action }}</td>
       <td>{{ entry.target }}</td>
+      <td>{{ entry.target_type }}</td>
       <td>{{ entry.result }}</td>
       <td>{{ entry.correlation_id }}</td>
     </tr>

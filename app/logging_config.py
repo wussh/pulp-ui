@@ -13,13 +13,25 @@ REDACT_KEYS = frozenset(
         "content",
         "pulp_admin_password",
         "ui_password_hash",
+        "session_secret",
+        "json_body",
     }
 )
 
 
+def _redact_value(value):
+    if isinstance(value, dict):
+        return redact(value)
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    return value
+
+
 def redact(record: dict) -> dict:
     return {
-        key: value for key, value in record.items() if key.lower() not in REDACT_KEYS
+        key: _redact_value(value)
+        for key, value in record.items()
+        if key.lower() not in REDACT_KEYS
     }
 
 

@@ -112,9 +112,10 @@ async def delete_api(request: Request, payload: dict = Body(...)) -> JSONRespons
     app.state.activity.record(
         {
             "correlation_id": correlation_id,
-            "operator": "operator",
+            "operator": getattr(request.state, "username", None) or "operator",
             "action": "resource.delete",
             "target": body["deleted"],
+            "target_type": "href",
             "result": "completed",
         }
     )

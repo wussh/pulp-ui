@@ -217,9 +217,10 @@ async def repository_create(request: Request, payload: dict = Body(...)) -> JSON
         request.app.state.activity.record(
             {
                 "correlation_id": correlation_id,
-                "operator": "operator",
+                "operator": getattr(request.state, "username", None) or "operator",
                 "action": "content.repository.create",
                 "target": payload.get("name", ""),
+                "target_type": "repository",
                 "result": "completed",
             }
         )
@@ -237,9 +238,10 @@ async def distribution_create(
         request.app.state.activity.record(
             {
                 "correlation_id": correlation_id,
-                "operator": "operator",
+                "operator": getattr(request.state, "username", None) or "operator",
                 "action": "content.distribution.create",
                 "target": payload.get("name", ""),
+                "target_type": "distribution",
                 "result": "completed",
             }
         )
@@ -257,9 +259,10 @@ async def sync_start(request: Request, payload: dict = Body(...)) -> JSONRespons
         request.app.state.activity.record(
             {
                 "correlation_id": correlation_id,
-                "operator": "operator",
+                "operator": getattr(request.state, "username", None) or "operator",
                 "action": "content.sync",
                 "target": payload.get("repository_href", ""),
+                "target_type": "repository",
                 "result": "failed" if result.get("failed") else "completed",
             }
         )

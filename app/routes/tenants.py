@@ -266,9 +266,10 @@ async def tenants_apply(request: Request, payload: dict = Body(...)) -> JSONResp
     app.state.activity.record(
         {
             "correlation_id": correlation_id,
-            "operator": "operator",
+            "operator": getattr(request.state, "username", None) or "operator",
             "action": "tenant.setup",
             "target": plan["domain"],
+            "target_type": "domain",
             "result": "failed" if result.get("failed") else "completed",
         }
     )

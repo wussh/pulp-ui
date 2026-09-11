@@ -1,11 +1,15 @@
 import base64
 import json
+import logging
 import posixpath
 import uuid
 
 import httpx
 
 from app.config import Settings
+from app.logging_config import redact
+
+logger = logging.getLogger(__name__)
 
 _ALLOWED_METHODS = frozenset({"GET", "POST", "PATCH", "PUT", "DELETE"})
 _SAFE_4XX_DETAIL_LIMIT = 400
@@ -101,6 +105,19 @@ class PulpClient:
         _reject_unsafe_path(path)
 
         correlation_id = correlation_id or uuid.uuid4().hex
+        # Never log headers or the Authorization value: only method, path,
+        # correlation id, and the redacted json_body.
+        logger.info(
+            "pulp.request %s",
+            redact(
+                {
+                    "method": method,
+                    "path": path,
+                    "correlation_id": correlation_id,
+                    "json_body": json_body,
+                }
+            ),
+        )
         try:
             resolved = self._client.base_url.join(path)
             _reject_unsafe_resolved_path(resolved)

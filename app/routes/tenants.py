@@ -21,6 +21,21 @@ def _record_id(href: str) -> str:
     return href.rstrip("/").split("/")[-1]
 
 
+def _recovery_note(completed: list[dict], stopped: dict) -> str:
+    done = ", ".join(
+        f"{item['resource']} {item.get('pulp_href') or item['name']}"
+        for item in completed
+    )
+    return (
+        f"The operation stopped at the {stopped['resource']} step "
+        f"({stopped['name']}) and nothing was rolled back. "
+        f"Completed resources: {done or 'none'}. "
+        "To recover, fix the cause of the failure and re-run setup (the plan "
+        "re-fetches existing resources and creates only what is missing), or delete "
+        "the completed resources listed above through the delete page."
+    )
+
+
 async def list_tenants(client) -> dict:
     domains = await client.request("GET", "/pulp/default/api/v3/domains/")
     users = await client.request("GET", "/pulp/default/api/v3/users/")
@@ -46,18 +61,33 @@ async def plan_setup(client, payload: dict) -> dict:
     username = validate_name("username", payload.get("username", ""))
     group = validate_name("group", payload.get("group", ""))
 
-    async def probe(path: str, field: str, value: str) -> dict | None:
-        # A probe that cannot complete must not abort planning: record a create and
-        # let apply_setup surface the real upstream error at that step, where it is
-        # reported as stopped_at. Keeps apply's stop-on-first-failure authoritative.
+    probe_warnings: list[str] = []
+
+    async def probe(resource: str, path: str, field: str, value: str) -> dict | None:
+        # A 4xx means the lookup could not answer definitively; treat it as absent
+        # (apply will surface the real error at that step) but record the uncertainty
+        # so the preview is not read as authoritative. Network/timeout (no status) and
+        # 5xx are NOT "absent" and must propagate to the 502 handler.
         try:
             return await _first_match(client, path, field, value)
-        except PulpError:
+        except PulpError as exc:
+            if exc.status_code is None or exc.status_code >= 500:
+                raise
+            probe_warnings.append(
+                f"lookup of {resource} returned status {exc.status_code}; "
+                "treating it as absent"
+            )
             return None
 
-    existing_domain = await probe("/pulp/default/api/v3/domains/", "name", domain)
-    existing_user = await probe("/pulp/default/api/v3/users/", "username", username)
-    existing_group = await probe("/pulp/default/api/v3/groups/", "name", group)
+    existing_domain = await probe(
+        "domain", "/pulp/default/api/v3/domains/", "name", domain
+    )
+    existing_user = await probe(
+        "user", "/pulp/default/api/v3/users/", "username", username
+    )
+    existing_group = await probe(
+        "group", "/pulp/default/api/v3/groups/", "name", group
+    )
 
     steps = []
     for resource, name, found in (
@@ -85,6 +115,7 @@ async def plan_setup(client, payload: dict) -> dict:
         "username": username,
         "group": group,
         "steps": steps,
+        "probe_warnings": probe_warnings,
         "preview": {
             "creates": sum(1 for step in steps if step["action"] == "create"),
             "reuses": sum(1 for step in steps if step["action"] == "reuse"),
@@ -159,14 +190,16 @@ async def apply_setup(client, plan: dict, correlation_id: str) -> dict:
                     client, group_record, domain_record, correlation_id
                 )
         except PulpError as exc:
+            stopped = {
+                "resource": step["resource"],
+                "name": step["name"],
+            }
             return {
                 "correlation_id": correlation_id,
                 "completed": completed,
-                "stopped_at": {
-                    "resource": step["resource"],
-                    "name": step["name"],
-                },
+                "stopped_at": stopped,
                 "message": exc.safe_message,
+                "recovery": _recovery_note(completed, stopped),
                 "failed": True,
             }
         completed.append({**step, "pulp_href": created.get("pulp_href", "")})

@@ -100,3 +100,66 @@ def test_cleanup_run_is_single_use(settings):
             "/ui/api/validation/cleanup", json={"run_id": run["run_id"]}
         )
     assert second.status_code == 400
+
+
+def test_isolation_fails_when_foreign_domain_leaks_created_href(settings):
+    # The foreign domain returns the created resource's exact href while the run's
+    # own domain does not list it. The pre-fix assertion cross-read before creation
+    # and matched on name, so it reported PASS here; this is the regression guard.
+    def handler(request):
+        if request.method == "POST" and request.url.path == REPO_COLLECTION:
+            return httpx.Response(201, json={"pulp_href": REPO_COLLECTION + "1/"})
+        if request.url.path == "/pulp/dummy-beta/api/v3/repositories/rpm/rpm/":
+            return httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "results": [{"pulp_href": REPO_COLLECTION + "1/"}],
+                },
+            )
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with TestClient(app) as test_client:
+        body = test_client.post(
+            "/ui/api/validation/run", json={"domain": "default"}
+        ).json()
+    statuses = {item["name"]: item["status"] for item in body["assertions"]}
+    assert statuses["domain_isolation"] == "FAIL"
+    evidence = {
+        item["name"]: item["evidence"] for item in body["assertions"]
+    }["domain_isolation"]
+    assert "foreign_domain_leak=True" in evidence
+
+
+def test_isolation_fails_when_creation_fails(settings):
+    def handler(request):
+        if request.method == "POST" and request.url.path == REPO_COLLECTION:
+            return httpx.Response(400, json={"name": ["This field must be unique."]})
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with TestClient(app) as test_client:
+        body = test_client.post(
+            "/ui/api/validation/run", json={"domain": "default"}
+        ).json()
+    statuses = {item["name"]: item["status"] for item in body["assertions"]}
+    assert statuses["domain_isolation"] == "FAIL"
+    evidence = {
+        item["name"]: item["evidence"] for item in body["assertions"]
+    }["domain_isolation"]
+    assert "could not be verified" in evidence
+
+
+def test_cleanup_rejects_unknown_run_records_failed_activity(settings):
+    def handler(request):
+        return httpx.Response(200, json={"count": 0, "results": []})
+
+    app = create_app(settings, client_factory=lambda: make_client(settings, handler))
+    with TestClient(app) as test_client:
+        response = test_client.post(
+            "/ui/api/validation/cleanup", json={"run_id": "nope"}
+        )
+    assert response.status_code == 400
+    entries = app.state.activity.recent()
+    assert [entry["result"] for entry in entries] == ["failed"]

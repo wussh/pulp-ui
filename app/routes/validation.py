@@ -18,37 +18,10 @@ async def run_validation(client, domain: str, runs, correlation_id: str) -> dict
     domain = validate_name("domain", domain)
     run_id = uuid4().hex[:12]
     runs.create(run_id)
-    assertions: list[dict] = []
     other_domain = _OTHER_DOMAIN.get(domain, "dummy-beta")
 
-    try:
-        cross = await client.request(
-            "GET", plugin_api(other_domain, "repositories/rpm/rpm/")
-        )
-        foreign = await client.request(
-            "GET",
-            plugin_api(domain, "repositories/rpm/rpm/"),
-            params={"name": f"isolation-{run_id}"},
-        )
-        crossed = any(
-            item.get("name") == f"isolation-{run_id}"
-            for item in cross.get("results", [])
-        )
-        assertions.append(
-            {
-                "name": "domain_isolation",
-                "status": "PASS" if foreign.get("count", 0) == 0 and not crossed else "FAIL",
-                "evidence": (
-                    f"own_domain_matches={foreign.get('count', 0)} "
-                    f"foreign_domain_leak={crossed}"
-                ),
-            }
-        )
-    except PulpError as exc:
-        assertions.append(
-            {"name": "domain_isolation", "status": "FAIL", "evidence": exc.safe_message}
-        )
-
+    # Execution order is: create, cross-read, own-domain list. The returned
+    # assertions are assembled in reporting order (isolation, creation, listing).
     repository_href = ""
     try:
         created = await client.request(
@@ -60,40 +33,77 @@ async def run_validation(client, domain: str, runs, correlation_id: str) -> dict
         repository_href = created.get("pulp_href", "")
         if repository_href:
             runs.add_resource(run_id, repository_href)
-        assertions.append(
-            {
-                "name": "resource_creation",
-                "status": "PASS" if repository_href else "FAIL",
-                "evidence": repository_href or "no href returned",
-            }
-        )
+        creation = {
+            "name": "resource_creation",
+            "status": "PASS" if repository_href else "FAIL",
+            "evidence": repository_href or "no href returned",
+        }
     except PulpError as exc:
-        assertions.append(
-            {"name": "resource_creation", "status": "FAIL", "evidence": exc.safe_message}
-        )
+        creation = {
+            "name": "resource_creation",
+            "status": "FAIL",
+            "evidence": exc.safe_message,
+        }
 
-    try:
-        listing = await client.request("GET", plugin_api(domain, "repositories/rpm/rpm/"))
-        found = repository_href in [
-            item.get("pulp_href") for item in listing.get("results", [])
-        ]
-        assertions.append(
-            {
+    if not repository_href:
+        # The isolation check cannot run without a resource to look for; a check
+        # that did not run must never report PASS.
+        isolation = {
+            "name": "domain_isolation",
+            "status": "FAIL",
+            "evidence": "resource was not created, isolation could not be verified",
+        }
+    else:
+        try:
+            cross = await client.request(
+                "GET", plugin_api(other_domain, "repositories/rpm/rpm/")
+            )
+            crossed = repository_href in [
+                item.get("pulp_href") for item in cross.get("results", [])
+            ]
+            isolation = {
+                "name": "domain_isolation",
+                "status": "FAIL" if crossed else "PASS",
+                "evidence": f"foreign_domain_leak={crossed}",
+            }
+        except PulpError as exc:
+            isolation = {
+                "name": "domain_isolation",
+                "status": "FAIL",
+                "evidence": exc.safe_message,
+            }
+
+    if not repository_href:
+        listing_assertion = {
+            "name": "resource_listing",
+            "status": "FAIL",
+            "evidence": "resource was not created, listing could not be verified",
+        }
+    else:
+        try:
+            listing = await client.request(
+                "GET", plugin_api(domain, "repositories/rpm/rpm/")
+            )
+            found = repository_href in [
+                item.get("pulp_href") for item in listing.get("results", [])
+            ]
+            listing_assertion = {
                 "name": "resource_listing",
                 "status": "PASS" if found else "FAIL",
                 "evidence": f"listed={found}",
             }
-        )
-    except PulpError as exc:
-        assertions.append(
-            {"name": "resource_listing", "status": "FAIL", "evidence": exc.safe_message}
-        )
+        except PulpError as exc:
+            listing_assertion = {
+                "name": "resource_listing",
+                "status": "FAIL",
+                "evidence": exc.safe_message,
+            }
 
     return {
         "run_id": run_id,
         "domain": domain,
         "correlation_id": correlation_id,
-        "assertions": assertions,
+        "assertions": [isolation, creation, listing_assertion],
         "resources": runs.resources(run_id),
     }
 
@@ -164,6 +174,15 @@ async def validation_cleanup(
         )
     except ValueError as exc:
         await client.aclose()
+        app.state.activity.record(
+            {
+                "correlation_id": correlation_id,
+                "operator": "operator",
+                "action": "validation.cleanup",
+                "target": payload.get("run_id", ""),
+                "result": "failed",
+            }
+        )
         return JSONResponse({"error": str(exc)}, status_code=400)
     await client.aclose()
     app.state.activity.record(

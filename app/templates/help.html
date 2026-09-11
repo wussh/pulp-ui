@@ -306,7 +306,7 @@ kubectl --kubeconfig $KC -n $NS logs deploy/pulp-ops | grep &lt;correlation-id&g
 .venv/bin/python -m pytest -q                       # must be green first
 docker build -t $IMG:0.2.0 .
 docker push  $IMG:0.2.0
-docker inspect --format='{{index .RepoDigests 0}}' $IMG:0.2.0
+{% raw %}docker inspect --format='{{index .RepoDigests 0}}' $IMG:0.2.0{% endraw %}
 
 kubectl --kubeconfig $KC -n $NS set image deploy/pulp-ops \
   pulp-ops=$IMG@sha256:&lt;new-digest&gt;

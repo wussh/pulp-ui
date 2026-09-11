@@ -10,23 +10,19 @@ from app.pulp import PulpClient, PulpError
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
-_COUNT_TARGETS = (
-    ("domains", "/pulp/default/api/v3/domains/"),
-    ("container_repositories", None),
-    ("container_distributions", None),
-)
 
-
-def check_public_route(settings: Settings) -> tuple[bool, int]:
+async def check_public_route(settings: Settings) -> tuple[bool, int]:
     if not settings.public_diagnostic_url:
         return False, 0
     try:
-        response = httpx.get(
-            f"{settings.public_diagnostic_url}/pulp/api/v3/status/",
-            timeout=settings.request_timeout_seconds,
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(settings.request_timeout_seconds),
             follow_redirects=False,
-        )
-    except httpx.HTTPError:
+        ) as client:
+            response = await client.get(
+                f"{settings.public_diagnostic_url}/pulp/api/v3/status/"
+            )
+    except (httpx.HTTPError, httpx.InvalidURL):
         return False, 0
     return response.status_code == 200, response.status_code
 
@@ -80,7 +76,7 @@ async def build_snapshot(client: PulpClient, settings: Settings) -> dict:
             }
         )
 
-    public_ok, public_status = check_public_route(settings)
+    public_ok, public_status = await check_public_route(settings)
     if not public_ok:
         warnings.append(
             {
@@ -96,7 +92,6 @@ async def build_snapshot(client: PulpClient, settings: Settings) -> dict:
             "public_ok": public_ok,
             "public_status": public_status,
             "public_url": settings.public_diagnostic_url,
-            "internal_url": settings.pulp_internal_url,
         },
         "warnings": warnings,
     }

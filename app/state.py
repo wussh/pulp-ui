@@ -17,6 +17,8 @@ class ActivityStore:
             del self._entries[: len(self._entries) - self._limit]
 
     def recent(self, limit: int = 50) -> list[dict]:
+        if limit <= 0:
+            return []
         return list(reversed(self._entries[-limit:]))
 
 

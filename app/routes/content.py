@@ -379,7 +379,9 @@ def _pull_through_rows(remotes: list, dists: list) -> list[dict]:
             {
                 "name": dist.get("name"),
                 "base_path": dist.get("base_path"),
-                "upstream_name": remote.get("upstream_name"),
+                # Pulp's pull-through remote has no `upstream_name` field; the
+                # registry name is the remote's `name` (verified live).
+                "upstream_name": remote.get("name"),
                 "upstream_url": remote.get("url"),
                 "distribution_href": dist.get("pulp_href"),
                 "note": "",

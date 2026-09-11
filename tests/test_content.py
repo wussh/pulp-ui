@@ -600,17 +600,19 @@ def test_pull_through_status_uses_only_two_collections(settings):
 
 
 def test_pull_through_status_joins_distribution_to_remote(settings):
+    # Fixture mirrors the real Pulp records: a pull-through remote has no
+    # `upstream_name` field, and the distribution name is `<registry>-proxy` with a
+    # bare (unprefixed) base_path. Verified live against tbs-dev.
     remotes = [
         {
             "name": "ghcr",
             "pulp_href": "/pulp/default/api/v3/remotes/container/pull-through/r1/",
             "url": "https://ghcr.io",
-            "upstream_name": "ghcr",
         }
     ]
     dists = [
         {
-            "name": "ghcr",
+            "name": "ghcr-proxy",
             "pulp_href": "/pulp/default/api/v3/distributions/container/pull-through/d1/",
             "base_path": "ghcr",
             "remote": remotes[0]["pulp_href"],
@@ -628,7 +630,7 @@ def test_pull_through_status_joins_distribution_to_remote(settings):
     assert response.status_code == 200
     assert response.json()["rows"] == [
         {
-            "name": "ghcr",
+            "name": "ghcr-proxy",
             "base_path": "ghcr",
             "upstream_name": "ghcr",
             "upstream_url": "https://ghcr.io",
